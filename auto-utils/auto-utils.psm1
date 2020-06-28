@@ -2,18 +2,22 @@
 #Requires -Module powershell-yaml 
 #Requires -Module jiraPS
 
+#NOTES on conventions
+# private functions: _my_private_function
+# public functions:  Verb-Noun
+
 #TODO but namespaces on module calls: Microsoft.PowerShell.Core\New-PSSession
 #TODO INPUT as string stream
 
-
-#RIP OUT the  PSFConfig stuff
-#what do we really want to store: credentials or session ... thats it
-
 #returns an array of epic hashtables
+#this requires on config or ENV... straightup/basic function
 function Get-JYaml {
     param(
         [CmdletBinding()]
-        [Parameter(Mandatory)]
+        [Parameter(
+            Mandatory,
+            HelpMessage="Enter Path to Yaml File containing JIRA Issues."
+        )]
         [ValidateScript({
             if( -Not ($_ | Test-Path) ){
                 throw "File or folder does not exist"
@@ -57,13 +61,16 @@ function Get-JYaml {
 
 function Sync-JYaml {
     param(
-        [CmdletBinding()]
-        [Parameter()]
-        [String]$YamlFile
-        [array]$YamlArray #this is an array of Hashes (from Get-JYaml)
-        #.... bunch more jira stuff
+        [Parameter( HelpMessage="Enter Path to Yaml File containing JIRA Issues.")]
+        [String]$YamlFile,
+        [Parameter( HelpMessage="Output of Get-JYaml")] #array of hashtables
+        [array]$YamlArray,
+        [Parameter(HelpMessage="Config has already been resolved")]
+        [hashtable]$ConfigHash,
+        [Parameter(ValueFromRemainingArguments, HelpMessage="Any param that is your config can be overwritten as -CLI Argument")]
+        $BonusParams
 
-        #--force this would update exsting epic... otherwise overwrite
+        #maybe provide -force this would update exsting epic... otherwise overwrite
     )
 
 #validate args
@@ -75,19 +82,23 @@ function Sync-JYaml {
         $YamlArray = Get-JYaml -YamlFile $YamlFile
     }
 
+    if(-not $ConfigHash){
 #setup session and load config
 #this defines overall state of the session and takes the place of invocating an instance object which has similar properties
 #hoping this is the powershell way...
-    $ConfigHash = _jyaml_init_config -OuterBound $PSBoundParameters
+#$ConfigHash = _jyaml_init_config -PassThruParams $BonusParams
+        $ConfigHash = _jyaml_init_config @BonusParams
 
 #this needs to be outside of the init to avoid circular dependency
 #this also serves an initial handshake check w/ jira as this will always make an http request
-    $ConfigHash = _resolve_any_additional_fields -ConfigHash $ConfigHash
+        $ConfigHash = _resolve_additional_config_fields -ConfigHash $ConfigHash
+    }
 
 #make sure yaml won't bomb mid import
     _validate_jyaml($YamlArray) #should be fatal if missing required or has unknown params
 
 #we are good to proceed
+#might want create a generic PreJiraIssue class call methods rather than work on raw data-structures
     foreach ($epic in $YamlArray ) {
         $epic_params = @{IssueType = "Epic"}
         $epic.keys |where-object { $_ -notmatch "Stories" }| foreach-object  { $epic_params[$_] =$epic[$_] }
@@ -110,22 +121,22 @@ $parameters = @{
 }
 #>
 
-Set-JiraIssue @parameters -Issue $id.key
+        #Set-JiraIssue @parameters -Issue $id.key
 
     }
 }
 
-function Get-JYamlPSFName { "auto.util.jyaml_config"}
+function Get-JYamlPSFCredentialProp{ "auto.util.jyaml_credential"}
 
 #returns bool
-function _config_is_too_old {
+function _is_older_than { #perhaps make this public? maybe there's already one out there?
     param(
         [Parameter(Mandatory)]
         [string] $date_string,
         [int] $threshold
     )
 
-    $force = $false
+    $is_older_than = $false
 
     $now_date = Get-Date
 
@@ -134,64 +145,61 @@ function _config_is_too_old {
         $delta = New-TimeSpan -start $creation_date -end $now_date
 
         if($delta.Days > $threshold) {
-            $force = true;
+            $is_older_than = true;
         }
     } catch {
         Write-PSFMessage -Level Warning -Message "bad date-time format in description... resetting" -Verbose
-        $force = $true
+        $is_older_than = $true
     }
 
-    return $force;
+    return $is_older_than;
 }
 
 #int in days of how long the PSFProperty env cache can live before a refresh
 #note this can be overwritten in config file
-function _default_ttl_cache { 7 } 
+function _default_ttl_credential{ 7 } 
 
 function  _jyaml_init_config {
     param(
-        [array]$OuterBound
-        [bool]$force
+        [Parameter(ValueFromRemainingArguments, HelpMessage="Any param that is your config can be overwritten as -CLI Argument")]
+        [array]$PassThruParams
     )
 
-#check propertyConfig cache
-#TODO: put a time to live cache-key
-    $ConfigHash = Get-PSFConfig -Name Get-JYamlPSFName
+    $hash_PassThruParams = Convert-ArrayToHash @PassThruParams
 
-    if (-not $force and $ConfigHash) {
-        $threshold_in_days = if ($ConfigHash[TTL_CONFIG_DAYS]) { $ConfigHash[TTL_CONFIG_DAYS]) } else { _default_ttl_cache}
-        $force = _config_is_too_old -date_string $ConfigHash.description -threshold $threshold_in_days
+#check for  cached credentials 
+#We need to validate this approach w/ get-storedcredential
+    $credential= Get-PSFConfig -Name Get-JYamlPSFCredentialProp
+
+    if (-not $hash_PassThruParams.credential and $credential) {
+        $threshold_in_days = if ($ConfigHash[TTL_CREDENTIAL_DAYS]) { $ConfigHash[TTL_CREDENTIAL_DAYS]) } else { _default_ttl_credential}
+        $too_old= _is_older_than -date_string $credential.description -threshold $threshold_in_days
+        if($too_old) {
+            $credential = get-credential -message "Please enter credentials for $jira_url"   #todo add a better note
+        }
+
+        Set-PSFConfig -FullName  Get-JYamlPSFCredentialProp -JYamlPSFName -Value $ConfigHash -Description ( Get-Date -Format "dddd MM/dd/yyyy HH:mm").ToString()
     }
 
-    if(-Not $ConfigHash or $force) {
-        $ConfigHash = _check_config_for_credentials -ConfigHash $ConfigHash;# or FATAL
-        $ConfigHash = _validate_config_for_required_params -ConfigHash $ConfigHash
-        Set-PSFConfig -FullName Get-JYamlPSFName -Value $ConfigHash -Description ( Get-Date -Format "dddd MM/dd/yyyy HH:mm").ToString()
-
+    #always override config w/ cli... BUT NOTE we don't set them in PSProperty
+    if($PassThruParams) {
+        $ConfigHash = _resolve_env_config @PassThruParams; # or FATAL
     }
 
-    #always override cache w/ cli... BUT NOTE we don't set them in PSProperty
-
-    if($OuterBound) {
-        $ConfigHash = _resolve_env_config -OuterBound $OuterBound; # or FATAL
-    }
+    _validate_config_for_required_params -ConfigHash $ConfigHash
 
     return $ConfigHash
 }
                                   
-function Delete-JYamlConfig {}
-    $hash = Get-PSFConfig -name Get-JYamlPSFName
+function Delete-JYamlPSFCredentialProp {
+    $hash = Get-PSFConfig -name Get-JYamlPSFCredentialProp
                                   
     if($hash){                    
-        Delete-PSFConfig -name Get-JYamlPSFName
+        Delete-PSFConfig -name  Get-JYamlPSFCredentialProp
     }                             
                                   
     return $true                  
 }                                 
-                                  
-function Sync-JYaml {             
-
-}
 
 function _validate_jyaml {
     param(
@@ -199,8 +207,8 @@ function _validate_jyaml {
         [array]$YamlArray #this is an array of Hashes (from Get-JYaml)
     )
 }
-
-function  _resolve_any_additional_fields {
+     
+function _resolve_additional_config_fields {
     param(
         [Parameter(Mandatory)]
         [hashtable]$ConfigHash
@@ -211,16 +219,21 @@ function  _resolve_any_additional_fields {
 
 function Get-JCustomFieldHash {
     param(
-        [Parameter()]
-        [hashtable]$ConfigHash
+        [Parameter(HelpMessage="Config has already been resolved")]
+        [hashtable]$ConfigHash,
+        [Parameter(ValueFromRemainingArguments, HelpMessage="Any param that is your config can be overwritten as -CLI Argument")]
+        $BonusParams
+
+    );
 
     if(-not $ConfigHash){
-        $ConfigHash =  _jyaml_init_config ;
+        $ConfigHash = _jyaml_init_config @BonusParams
     }
 
     #Get-CustomField
 }
 
+#returns bolean
 function  _validate_config_for_required_params {
     param(
         [Parameter(Mandatory)]
@@ -229,39 +242,44 @@ function  _validate_config_for_required_params {
 
 <#
      $Credential = Get-StoredCredential -Target $cmTarget
-    if( -not $ConfigHash["credentials"]) {
         #prompt for credential
-        $ConfigHash["credentials"] = get-credential
-                    $storedCredential = @{
+        $Credential = get-credential
+
+        $storedCredential = @{
                 Target         = $cmTarget
                 UserName       = $Credential.UserName
                 SecurePassword = $Credential.Password
             }
-            $null = New-StoredCredential @storedCredential -Comment "for use with the Jira module"
-            #Remove-StoredCredential -Target $cmTarget -ErrorAction Ignore
-#>
-    }
 
-    foreach ( $required in @("JiraUrl", "JiraProject", "credentials")) {
+        $null = New-StoredCredential @storedCredential -Comment "for use with the Jira module"
+        #Remove-StoredCredential -Target $cmTarget -ErrorAction Ignore
+#>
+
+    foreach ( $required in @("JiraUrl", "JiraProject", "credential")) {
         if( -not $ConfigHash[$required]) {
             throw [System.MissingFieldException]"missing field: $required"
         }
     }
 
-    return $ConfigHash;
+    return $true;
 }
 
 function _required_params {@("JiraUrl", "JiraProject", "credentials"); }
-function _resolve_env_config ($OuterBound) { #returns a hash from ini, ENV, and cli params
+function _resolve_env_config { #returns a hash from ini, ENV, and cli params
+    param(
+        [Parameter(ValueFromRemainingArguments, HelpMessage="Any param that is your config can be overwritten as -CLI Argument")]
+        [array]$PassThruParams
+    )
 
     $env_hashtable = @{}
-    $file = resolve_config_file
+    $file = _resolve_config_file
     if($file){
         try {
             $env_hashtable = get-ini -path $file
         }catch {
             throw [System.IO.FileLoadException]"bad ini config file: $file"
         }
+
     }else {
         Write-PSFMessage -message "No config file... skipping ENV load too" -verbose
         return;
@@ -269,8 +287,9 @@ function _resolve_env_config ($OuterBound) { #returns a hash from ini, ENV, and 
 
     $env_hashtable Join-EnvToConfig -ConfigHash $env_hashtable
 
-    if($OuterBound) {
-        @($OuterBound.keys) | foreach-object { $env_hashtable[$_] = $OuterBound[$_] }
+    if($PassThruParams) {
+        $hash_PassThruParams = Convert-ArrayToHash @PassThruParams
+        @($hash_PassThruParams.keys) | foreach-object { $env_hashtable[$_] = $hash_PassThruParams[$_] }
     }
 
     return $env_hashtable
@@ -421,4 +440,35 @@ function _parse_ini_content {
     return  ($Text | where-object { $_ -notmatch "^#|^\s"})
 }   
 
-Export-ModuleMember -Function 'Get-*','Join-*','Sync-*'
+#this is a basic/common thing in perl... googled and googled and couldn't find native Posh way
+#rolling my own
+#perl example: my %hash = @array; 
+function Convert-ArrayToHash  {
+    param(
+        [parameter(HelpMessage= "be sure to splat your arrays when invoking", ValueFromRemainingArguments)]
+        [array]$array
+        )
+
+    if(($array.length) % 2 -ne 0) {
+        throw [System.InvalidCastException]"odd number of elements in array can not be converted to hash"
+    }
+
+    $hash = @{};
+
+    for ($i = 0;  $i -lt $array.length ; $i++){
+        if ($i % 2  -ne 0 ){ Continue}
+
+        #trim off "-"
+        $key = $array[$i].toString();
+        if($key -match "^-"){
+            $key = $key.substring(1 , ($key.length - 1))
+        }
+
+        $hash[$key] = $array[$i +1];
+    }
+
+    return $hash
+}
+
+
+Export-ModuleMember -Function 'Get-*','Join-*','Sync-*', 'Convert-*'
