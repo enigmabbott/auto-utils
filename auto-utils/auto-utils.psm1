@@ -13,7 +13,6 @@
 #this requires on config or ENV... straightup/basic function
 function Get-JYaml {
     param(
-        [CmdletBinding()]
         [Parameter(
             Mandatory,
             HelpMessage="Enter Path to Yaml File containing JIRA Issues."
@@ -89,19 +88,21 @@ function Sync-JYaml {
 #$ConfigHash = _jyaml_init_config -PassThruParams $BonusParams
         $ConfigHash = _jyaml_init_config @BonusParams
 
-#this needs to be outside of the init to avoid circular dependency
-#this also serves an initial handshake check w/ jira as this will always make an http request
-        $ConfigHash = _resolve_additional_config_fields -ConfigHash $ConfigHash
+        $fields_hash = Get-JCustomFieldHash  -ConfigHash $ConfigHash
+        if(-not $fields_hash ){
+            throw "Could not fetch jira custom fields.. FATAL";
+        }
+
+        $ConfigHash[ _config_jira_fields_key ] = $fields_hash
     }
 
 #make sure yaml won't bomb mid import
     _validate_jyaml($YamlArray) #should be fatal if missing required or has unknown params
 
-#we are good to proceed
 #might want create a generic PreJiraIssue class call methods rather than work on raw data-structures
     foreach ($epic in $YamlArray ) {
         $epic_params = @{IssueType = "Epic"}
-        $epic.keys |where-object { $_ -notmatch "Stories" }| foreach-object  { $epic_params[$_] =$epic[$_] }
+        $epic.keys | where-object { $_ -notmatch "Stories" }| foreach-object  { $epic_params[$_] =$epic[$_] }
         $epic_params = _validate_epic_params  -EpicParams $epic_params
 
         try {
@@ -125,8 +126,6 @@ $parameters = @{
 
     }
 }
-
-function Get-JYamlPSFCredentialProp{ "auto.util.jyaml_credential"}
 
 #returns bool
 function _is_older_than { #perhaps make this public? maybe there's already one out there?
@@ -155,92 +154,8 @@ function _is_older_than { #perhaps make this public? maybe there's already one o
     return $is_older_than;
 }
 
-#int in days of how long the PSFProperty env cache can live before a refresh
-#note this can be overwritten in config file
-function _default_ttl_credential{ 7 } 
-
-function  _jyaml_init_config {
-    param(
-        [Parameter(ValueFromRemainingArguments, HelpMessage="Any param that is your config can be overwritten as -CLI Argument")]
-        [array]$PassThruParams
-    )
-
-    $hash_PassThruParams = Convert-ArrayToHash @PassThruParams
-
-#check for  cached credentials 
-#We need to validate this approach w/ get-storedcredential
-    $credential= Get-PSFConfig -Name Get-JYamlPSFCredentialProp
-
-    if (-not $hash_PassThruParams.credential and $credential) {
-        $threshold_in_days = if ($ConfigHash[TTL_CREDENTIAL_DAYS]) { $ConfigHash[TTL_CREDENTIAL_DAYS]) } else { _default_ttl_credential}
-        $too_old= _is_older_than -date_string $credential.description -threshold $threshold_in_days
-        if($too_old) {
-            $credential = get-credential -message "Please enter credentials for $jira_url"   #todo add a better note
-        }
-
-        Set-PSFConfig -FullName  Get-JYamlPSFCredentialProp -JYamlPSFName -Value $ConfigHash -Description ( Get-Date -Format "dddd MM/dd/yyyy HH:mm").ToString()
-    }
-
-    #always override config w/ cli... BUT NOTE we don't set them in PSProperty
-    if($PassThruParams) {
-        $ConfigHash = _resolve_env_config @PassThruParams; # or FATAL
-    }
-
-    _validate_config_for_required_params -ConfigHash $ConfigHash
-
-    return $ConfigHash
-}
-                                  
-function Delete-JYamlPSFCredentialProp {
-    $hash = Get-PSFConfig -name Get-JYamlPSFCredentialProp
-                                  
-    if($hash){                    
-        Delete-PSFConfig -name  Get-JYamlPSFCredentialProp
-    }                             
-                                  
-    return $true                  
-}                                 
-
-function _validate_jyaml {
-    param(
-        [Parameter(Mandatory)]
-        [array]$YamlArray #this is an array of Hashes (from Get-JYaml)
-    )
-}
-     
-function _resolve_additional_config_fields {
-    param(
-        [Parameter(Mandatory)]
-        [hashtable]$ConfigHash
-    )
-
-    [array]$all_jfields = Get-JCustomFieldHash -ConfigHash $ConfigHash 
-}
-
-function Get-JCustomFieldHash {
-    param(
-        [Parameter(HelpMessage="Config has already been resolved")]
-        [hashtable]$ConfigHash,
-        [Parameter(ValueFromRemainingArguments, HelpMessage="Any param that is your config can be overwritten as -CLI Argument")]
-        $BonusParams
-
-    );
-
-    if(-not $ConfigHash){
-        $ConfigHash = _jyaml_init_config @BonusParams
-    }
-
-    #Get-CustomField
-}
-
-#returns bolean
-function  _validate_config_for_required_params {
-    param(
-        [Parameter(Mandatory)]
-        [hashtable]$ConfigHash
-    )
-
 <#
+$investigate this vs using the jira-session
      $Credential = Get-StoredCredential -Target $cmTarget
         #prompt for credential
         $Credential = get-credential
@@ -255,7 +170,138 @@ function  _validate_config_for_required_params {
         #Remove-StoredCredential -Target $cmTarget -ErrorAction Ignore
 #>
 
-    foreach ( $required in @("JiraUrl", "JiraProject", "credential")) {
+function _jyaml_init_config {
+    param(
+        [Parameter(ValueFromRemainingArguments, HelpMessage="Any param that is your config can be overwritten as -CLI Argument")]
+        [array]$PassThruParams
+    )
+
+    $hash_PassThruParams = Convert-ArrayToHash @PassThruParams
+
+#check for  cached credentials 
+
+    #$jira_session = JiraPS\Get-JiraSession
+    
+
+#always override config w/ cli... BUT NOTE we don't set them in PSProperty
+    if($PassThruParams) {
+        $ConfigHash = _resolve_env_config @PassThruParams; # or FATAL
+    }
+
+    $jserver = JiraPS\Get-JiraConfigServer;
+
+    $jira_uri_key = _config_url_key 
+    $reset_server_flag = $false
+    if($ConfigHash[$jira_uri_key ] ){
+        $uri_from_config = $ConfigHash[ $jira_uri_key ];
+        if( $jserver and ($uri_form_config -ne $jserver ){
+            Write-PSFMessage -message "config differs from Get-JiraConfigServer.. setting to: $uri_from_config " -verbose
+            JiraPS\Set-JiraConfigServer $uri_from_config
+            $reset_server_flag = $true
+            
+        } elseif ( -not $jserver ){
+            Write-PSFMessage -message "set JiraConfigServer to: $uri_from_config " -verbose
+            JiraPS\Set-JiraConfigServer $uri_from_config
+            $reset_server_flag = $true
+
+        }
+    } elseif (-not $jserver ) {
+        throw "need $jira_uri_key in config or as cli argument" 
+    }
+
+    $jira_session = JiraPS\Get-JiraSession
+
+    if($reset_server_flag) {$jira_session = $null } 
+
+    if ( $ConfigHash[credential] ){
+         Write-PSFMessage -message "Resetting credential " -verbose
+         $jira_session = New-JiraSession -Credential $ConfigHash[credential]
+
+    }elseif(!$jira_session){
+        $jserver = JiraPS\Get-JiraConfigServer;
+        $params = @{"Message" = "Enter params for JIRA: $jserver" }
+
+        $user_key = _config_user_key ;
+        if($ConfigHash[$user_key]){
+            $params["username"] =  $ConfigHash[$user_key]
+        }
+
+        $jira_session = New-JiraSession -Credential (get-credential @parms) 
+    }
+
+    return $ConfigHash
+}
+
+function _validate_jyaml {
+    param(
+        [Parameter(Mandatory, HelpMessage="Requred From Get-JYaml")] #array of hashes
+        [array]$YamlArray,
+        [Parameter(Mandatory,HelpMessage="Config should already be resolved")]
+        [hashtable]$ConfigHash,
+    );
+
+    $fields = $ConfigHash[ _config_jira_fields_key ]
+
+    if(-not $fields){
+        throw "jira fields should be resolved earlier... this is a developer error"
+    }
+
+    $errors = $false
+
+    foreach ($proto_issue in $YamlArray){
+        foreach ($key in $proto_issue.keys ){
+            if(-not $fields[$key]){
+                Write-PSFMessage -Level Warning -message "Invalid yaml; key: $key is not among the supported fields of your jira instance" -verbose;
+                $errors = $true
+            }
+        }
+    }
+
+    if($errors){
+        throw [System.IO.InvalidDataException]"Bad Yaml";
+    }
+
+    return $true
+}
+     
+function Get-JCustomFieldHash {
+    param(
+        [Parameter(HelpMessage="Config has already been resolved")]
+        [hashtable]$ConfigHash,
+        [Parameter(ValueFromRemainingArguments, HelpMessage="Any param that is your config can be overwritten as -CLI Argument")]
+        $BonusParams
+
+    );
+
+    if(-not $ConfigHash){
+        $ConfigHash = _jyaml_init_config @BonusParams
+    }
+
+    $fields =  Get-JiraField
+
+    $field_hash = @{} 
+#support both name and ID
+    $fields | foreach-item { 
+        $field_hash[$_.ID] = $_;
+        $field_hash[$_.name] = $_
+        };
+
+    return $field_hash;
+}
+
+function _config_url_key { "JiraUrl"}
+function _config_user_key { "JiraUser"}
+function _config_jira_fields_key{ "JiraFields" }  #this is resolved and shouldn't be provided
+function _config_ini_name { ".poshjiraclientrc"}
+
+#returns bolean
+function  _validate_config_for_required_params {
+    param(
+        [Parameter(Mandatory)]
+        [hashtable]$ConfigHash
+    )
+
+   foreach ( $required in @("JiraUrl", "JiraProject", "credential")) {
         if( -not $ConfigHash[$required]) {
             throw [System.MissingFieldException]"missing field: $required"
         }
@@ -264,7 +310,6 @@ function  _validate_config_for_required_params {
     return $true;
 }
 
-function _required_params {@("JiraUrl", "JiraProject", "credentials"); }
 function _resolve_env_config { #returns a hash from ini, ENV, and cli params
     param(
         [Parameter(ValueFromRemainingArguments, HelpMessage="Any param that is your config can be overwritten as -CLI Argument")]
@@ -297,16 +342,13 @@ function _resolve_env_config { #returns a hash from ini, ENV, and cli params
 
 function _resolve_config_file {
     foreach ($p in @($Env:HOME,  (get-location).path) ) {
-        $maybe_rc = join-path -path $p -ChildPath _ini_config_name
+        $maybe_rc = join-path -path $p -ChildPath _config_ini_name
         if(test-path $p and test-path $maybe_rc) {
             return $maybe_rc
         }
     }
     return;
 }
-
-function _ini_config_name { ".poshjiraclientrc"}
-
 
 function Get-Ini {
     Param(
@@ -469,6 +511,5 @@ function Convert-ArrayToHash  {
 
     return $hash
 }
-
 
 Export-ModuleMember -Function 'Get-*','Join-*','Sync-*', 'Convert-*'
