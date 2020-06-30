@@ -1,5 +1,5 @@
 #REQUIRES -VERSION 5.1
-#Requires -Module powershell-yaml 
+#Requires -Module powershell-yaml
 #Requires -Module jiraPS
 
 #NOTES on conventions
@@ -36,9 +36,9 @@ function Get-JYaml {
             throw [System.IO.FileLoadException]"yaml file is empty"
         }
 
-        if (-Not $yaml_struct -is [hashtable] or -not $yaml_struct -is [array]){
+        if (( $yaml_struct -isnot [hashtable]) -or ( $yaml_struct -isnot [array])){
             throw [System.IO.FileLoadException]"bad yaml is not a hashtable or array"
-        } 
+        }
 
         if ($yaml_struct -is [hashtable]){
             $yaml_array_of_hashtables +=   $yaml_struct
@@ -73,7 +73,7 @@ function Sync-JYaml {
     )
 
 #validate args
-    if(-not $YamlArray and -not $YamlFile) {
+    if(-not $YamlArray -and -not $YamlFile) {
         throw ("-YamlFile or -YamlArray are required params")
     }
 
@@ -93,7 +93,7 @@ function Sync-JYaml {
             throw "Could not fetch jira custom fields.. FATAL";
         }
 
-        $ConfigHash[ _config_jira_fields_key ] = $fields_hash
+        $ConfigHash[(_config_jira_fields_key) ] = $fields_hash
     }
 
 #make sure yaml won't bomb mid import
@@ -107,6 +107,8 @@ function Sync-JYaml {
 
         try {
             $epic = new-JiraIssue @epic_params
+        }catch {
+            throw "failed to create issue"
         }
 
         #Set-JiraIssue -Issue $id.key -Assignee 'E141355'
@@ -140,10 +142,10 @@ function _is_older_than { #perhaps make this public? maybe there's already one o
     $now_date = Get-Date
 
     try {
-        $creation_date [datetime] $date_string
+        $creation_date = [datetime] $date_string
         $delta = New-TimeSpan -start $creation_date -end $now_date
 
-        if($delta.Days > $threshold) {
+        if($delta.Days -lt $threshold) {
             $is_older_than = true;
         }
     } catch {
@@ -176,48 +178,43 @@ function _jyaml_init_config {
         [array]$PassThruParams
     )
 
-    $hash_PassThruParams = Convert-ArrayToHash @PassThruParams
-
-#check for  cached credentials 
-
-    #$jira_session = JiraPS\Get-JiraSession
-    
-
 #always override config w/ cli... BUT NOTE we don't set them in PSProperty
     if($PassThruParams) {
         $ConfigHash = _resolve_env_config @PassThruParams; # or FATAL
     }
 
     $jserver = JiraPS\Get-JiraConfigServer;
-
-    $jira_uri_key = _config_url_key 
+    $jira_uri_key = _config_url_key
     $reset_server_flag = $false
+
     if($ConfigHash[$jira_uri_key ] ){
         $uri_from_config = $ConfigHash[ $jira_uri_key ];
-        if( $jserver and ($uri_form_config -ne $jserver ){
+
+        if( $jserver -and ($uri_form_config -ne $jserver )){
             Write-PSFMessage -message "config differs from Get-JiraConfigServer.. setting to: $uri_from_config " -verbose
             JiraPS\Set-JiraConfigServer $uri_from_config
             $reset_server_flag = $true
-            
+
         } elseif ( -not $jserver ){
             Write-PSFMessage -message "set JiraConfigServer to: $uri_from_config " -verbose
             JiraPS\Set-JiraConfigServer $uri_from_config
             $reset_server_flag = $true
 
         }
+
     } elseif (-not $jserver ) {
-        throw "need $jira_uri_key in config or as cli argument" 
+        throw "need $jira_uri_key in config or as cli argument"
     }
 
     $jira_session = JiraPS\Get-JiraSession
 
-    if($reset_server_flag) {$jira_session = $null } 
+    if( $reset_server_flag ) {$jira_session = $null }
 
-    if ( $ConfigHash[credential] ){
+    if( $ConfigHash["credential"] ){
          Write-PSFMessage -message "Resetting credential " -verbose
-         $jira_session = New-JiraSession -Credential $ConfigHash[credential]
+         $jira_session = New-JiraSession -Credential $ConfigHash["credential"]
 
-    }elseif(!$jira_session){
+    } elseif (!$jira_session){
         $jserver = JiraPS\Get-JiraConfigServer;
         $params = @{"Message" = "Enter params for JIRA: $jserver" }
 
@@ -226,7 +223,7 @@ function _jyaml_init_config {
             $params["username"] =  $ConfigHash[$user_key]
         }
 
-        $jira_session = New-JiraSession -Credential (get-credential @parms) 
+        $jira_session = New-JiraSession -Credential (get-credential @parms)
     }
 
     return $ConfigHash
@@ -237,10 +234,10 @@ function _validate_jyaml {
         [Parameter(Mandatory, HelpMessage="Requred From Get-JYaml")] #array of hashes
         [array]$YamlArray,
         [Parameter(Mandatory,HelpMessage="Config should already be resolved")]
-        [hashtable]$ConfigHash,
+        [hashtable]$ConfigHash
     );
 
-    $fields = $ConfigHash[ _config_jira_fields_key ]
+    $fields = $ConfigHash[(_config_jira_fields_key)]
 
     if(-not $fields){
         throw "jira fields should be resolved earlier... this is a developer error"
@@ -249,7 +246,7 @@ function _validate_jyaml {
     $errors = $false
 
     foreach ($proto_issue in $YamlArray){
-        foreach ($key in $proto_issue.keys ){
+        foreach ($key in $proto_issue.keys){
             if(-not $fields[$key]){
                 Write-PSFMessage -Level Warning -message "Invalid yaml; key: $key is not among the supported fields of your jira instance" -verbose;
                 $errors = $true
@@ -263,7 +260,7 @@ function _validate_jyaml {
 
     return $true
 }
-     
+
 function Get-JCustomFieldHash {
     param(
         [Parameter(HelpMessage="Config has already been resolved")]
@@ -279,9 +276,9 @@ function Get-JCustomFieldHash {
 
     $fields =  Get-JiraField
 
-    $field_hash = @{} 
+    $field_hash = @{}
 #support both name and ID
-    $fields | foreach-item { 
+    $fields | foreach-item {
         $field_hash[$_.ID] = $_;
         $field_hash[$_.name] = $_
         };
@@ -330,7 +327,7 @@ function _resolve_env_config { #returns a hash from ini, ENV, and cli params
         return;
     }
 
-    $env_hashtable Join-EnvToConfig -ConfigHash $env_hashtable
+    $env_hashtable = Join-EnvToConfig -ConfigHash $env_hashtable
 
     if($PassThruParams) {
         $hash_PassThruParams = Convert-ArrayToHash @PassThruParams
@@ -342,8 +339,8 @@ function _resolve_env_config { #returns a hash from ini, ENV, and cli params
 
 function _resolve_config_file {
     foreach ($p in @($Env:HOME,  (get-location).path) ) {
-        $maybe_rc = join-path -path $p -ChildPath _config_ini_name
-        if(test-path $p and test-path $maybe_rc) {
+        $maybe_rc = Join-Path -Path $p -ChildPath (_config_ini_name)
+        if(Test-Path -Path $p and Test-Path -Path $maybe_rc) {
             return $maybe_rc
         }
     }
@@ -365,74 +362,75 @@ function Get-Ini {
             }
         })]
         [string]$Path,
-        [Parameter(
-                   HelpMessage="this is the content of your ini file; be sure to: gc foo.ini | out-string"
-        )]
+        [Parameter( HelpMessage="this is the content of your ini file; be sure to: gc foo.ini | out-string")]
         [string[]]$Text
     )
 
-    if(!$path -and !$text){
-       throw " -Path or -Text are required arguments"
-    }
-
-    if(! $text) {
-        $text = get-content -path $path
-    }
-
-    $ini_content = _parse_ini_content -Text $text
-
-    if(! $ini_content){ throw "no ini content" }
-
-    $ini_obj = @{}
-    $hash = @{}
-    [string]$section=""
-    $section_regex = "^\[.*\]$";
-
-    $i = 0;
-    if($env:vb){ $verbosepreference = $env:vb }
-    foreach ($line in $ini_content) {
-        $line = $line.trim()
-        if($line -match "^$"){
-            continue;
+    Process {
+        if(!$path -and !$text){
+           throw " -Path or -Text are required arguments"
         }
 
-        $i++;
+        if(! $text) {
+            $text = get-content -path $path
+        }
 
-        $str = $i.tostring() + " " + $line
-        write-verbose $str
+        $ini_content = _parse_ini_content -Text $text
 
-        #this is not the first section.. but a subsequent section if it exists
-        #we write all the collected data then redeclare a section
-        #example:[my_section]
-        if (($line -match $section_regex) -AND $section ) {
+        if(! $ini_content){ throw "no ini content" }
+
+        $ini_obj = @{}
+        $hash = @{}
+        [string]$section=""
+        $section_regex = "^\[.*\]$";
+
+        $i = 0;
+        if($env:vb){ $verbosepreference = $env:vb }
+        foreach ($line in $ini_content) {
+            $line = $line.trim()
+            if($line -match "^$"){
+                continue;
+            }
+
+            $i++;
+
+            $str = $i.tostring() + " " + $line
+            write-verbose $str
+
+            #this is not the first section.. but a subsequent section if it exists
+            #we write all the collected data then redeclare a section
+            #example:[my_section]
+            if (($line -match $section_regex) -AND $section ) {
+                $ini_obj[$section] = $hash
+
+                #re init variables
+                $hash=@{}
+                $section = $line  -replace "\[|\]",""
+
+            #Get section name. This will only run for the first section heading
+            #example:[my_section]
+            } elseif ($line -match $section_regex) {
+                $section = $line -replace "\[|\]",""
+
+            } elseif ($line -match "=") {
+                $key,$value= $line.split("=").trim()
+                $hash[$key]= $value
+
+            } else {
+                #this should probably never happen
+                Write-Warning "Unexpected line $line"
+            }
+        }
+
+        #get last section
+        if(!$section){ $section = "default"}
+
+        If ($hash.count -gt 0) {
             $ini_obj[$section] = $hash
-
-            #re init variables
-            $hash=@{}
-            $section = $line  -replace "\[|\]",""
-
-        #Get section name. This will only run for the first section heading
-        #example:[my_section]
-        } elseif ($line -match $section_regex) {
-            $section = $line -replace "\[|\]",""
-
-        } elseif ($line -match "=") {
-            $key,$value= $line.split("=").trim()
-            $hash[$key]= $value
-
-        } else {
-            #this should probably never happen
-            Write-Warning "Unexpected line $line"
         }
-    }
 
-    #get last section
-    if(!$section){ $section = "default"}
-
-    If ($hash.count -gt 0) {
-        $ini_obj[$section] = $hash
+        return $ini_obj
     }
-    return $ini_obj
 }
 
 function Join-EnvToConfig {
@@ -449,11 +447,11 @@ function Join-EnvToConfig {
 
     if($env:vb){ $verbosepreference = $env:vb }
     $config_copy = $configHash.clone();
-    
+
     foreach( $key in $config_copy.keys){
         write-verbose "key check: $key"
         if($ConfigHash[$key] -is [hashtable]){
-            $configHash[$key] = 
+            $configHash[$key] =
                 Join-EnvToConfig -ConfigHash $config_copy[$key] -envHash $envHash
 
             continue
@@ -480,11 +478,11 @@ function Get-EnvHash {
 function _parse_ini_content {
     Param( [Parameter(Mandatory)] $Text)
     return  ($Text | where-object { $_ -notmatch "^#|^\s"})
-}   
+}
 
 #this is a basic/common thing in perl... googled and googled and couldn't find native Posh way
 #rolling my own
-#perl example: my %hash = @array; 
+#perl example: my %hash = @array; #note array must be even
 function Convert-ArrayToHash  {
     param(
         [parameter(HelpMessage= "be sure to splat your arrays when invoking", ValueFromRemainingArguments)]
