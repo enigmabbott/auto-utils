@@ -56,7 +56,8 @@ function Get-JYaml {
     return $yaml_array_of_hashtables;
 }
 
-#yaml file struct likes like this:
+#yaml file struct like this:
+
 
 function Sync-JYaml {
     param(
@@ -74,7 +75,7 @@ function Sync-JYaml {
 
 #validate args
     if(-not $YamlArray -and -not $YamlFile) {
-        throw ("-YamlFile or -YamlArray are required params")
+        throw [System.Management.Automation.MethodInvocationException] "-YamlFile or -YamlArray are required params"
     }
 
     if( -Not $YamlArray ) {
@@ -88,22 +89,23 @@ function Sync-JYaml {
 #$ConfigHash = _jyaml_init_config -PassThruParams $BonusParams
         $ConfigHash = _jyaml_init_config @BonusParams
 
+#this puts a JIRA's customfield IDs into the confighash; also validates crendentials and init handshake
         $fields_hash = Get-JCustomFieldHash  -ConfigHash $ConfigHash
         if(-not $fields_hash ){
             throw "Could not fetch jira custom fields.. FATAL";
         }
 
-        $ConfigHash[(_config_jira_fields_key) ] = $fields_hash
+        $ConfigHash[ (_config_jira_fields_key) ] = $fields_hash
     }
 
 #make sure yaml won't bomb mid import
     _validate_jyaml($YamlArray) #should be fatal if missing required or has unknown params
 
-#might want create a generic PreJiraIssue class call methods rather than work on raw data-structures
-    foreach ($epic in $YamlArray ) {
+#might want to create a generic PreJiraIssue class and call methods rather than work on raw data-structures
+    foreach ($epic in $YamlArray) {
         $epic_params = @{IssueType = "Epic"}
-        $epic.keys | where-object { $_ -notmatch "Stories" }| foreach-object  { $epic_params[$_] =$epic[$_] }
-        $epic_params = _validate_epic_params  -EpicParams $epic_params
+        $epic.keys | where-object { $_ -notmatch "Stories" } | foreach-object  { $epic_params[$_] =$epic[$_] }
+        $epic_params = _validate_epic_params -EpicParams $epic_params
 
         try {
             $epic = new-JiraIssue @epic_params
@@ -123,8 +125,7 @@ $parameters = @{
     }
 }
 #>
-
-        #Set-JiraIssue @parameters -Issue $id.key
+    #Set-JiraIssue @parameters -Issue $id.key
 
     }
 }
@@ -172,6 +173,55 @@ $investigate this vs using the jira-session
         #Remove-StoredCredential -Target $cmTarget -ErrorAction Ignore
 #>
 
+
+#this is not called by other methods; it is a user setup option/convenience method
+function Init-JYaml {
+    param(
+        # Parameter help description
+        [Parameter(HelpMessage="Name of JiraUrl")]
+        [String] $JiraUrl,
+        [Parameter(HelpMessage="Name of JiraUser")]
+        [String] $JiraUser
+    )
+
+    $file = _config_file_in_user_home
+    if(($file -ne $null) -and (test-path -Path $file) -and ((Get-Content $file) -ne $null)){
+        throw "file exists: $file .. won't overwrite"
+    }
+
+    if(-not $JiraUrl){
+        $JiraUrl = Read-Host "Enter Jira url: "
+        if(-not $JiraUrl) { throw "jira_url is required"}
+    }
+
+    if(-not $JiraUser){
+        $JiraUser = Read-Host "Enter Jira username for authentication: "
+        if(-not $JiraUser) { throw "jira_user is required"}
+    }
+
+    $template = @"
+[jiraclient]
+JiraUrl = $JiraUrl
+JiraUser = $JiraUser
+
+#[issues]
+#project = ABB
+#type = story
+#priority = Normal
+#
+# -- Default assignee
+#assignee = myname
+
+#components = CSA
+#fixVersions = Backlog
+"@
+
+    Add-Content -Path $file -Value $template
+    Write-PSFMessage -message "Created $file" -verbose
+
+    return $file
+}
+
 function _jyaml_init_config {
     param(
         [Parameter(ValueFromRemainingArguments, HelpMessage="Any param that is your config can be overwritten as -CLI Argument")]
@@ -179,15 +229,28 @@ function _jyaml_init_config {
     )
 
 #always override config w/ cli... BUT NOTE we don't set them in PSProperty
+    $ConfigHash = @{}
     if($PassThruParams) {
         $ConfigHash = _resolve_env_config @PassThruParams; # or FATAL
+        if(-not $ConfigHash) {
+
+            Write-PSFMessage -message "No config file... execute Init-JYaml" -verbose
+            throw "Config file is required" 
+        }
+    }else {
+        $ConfigHash = _resolve_env_config 
+
     }
 
     $jserver = JiraPS\Get-JiraConfigServer;
+    if( ($jserver -ne $null) -and ($jserver -eq 'foo')) {
+            $jserver = $null
+    }
+
     $jira_uri_key = _config_url_key
     $reset_server_flag = $false
 
-    if($ConfigHash[$jira_uri_key ] ){
+    if($ConfigHash.ContainsKey($jira_uri_key) ){
         $uri_from_config = $ConfigHash[ $jira_uri_key ];
 
         if( $jserver -and ($uri_form_config -ne $jserver )){
@@ -223,10 +286,29 @@ function _jyaml_init_config {
             $params["username"] =  $ConfigHash[$user_key]
         }
 
-        $jira_session = New-JiraSession -Credential (get-credential @parms)
+        $jira_session = New-JiraSession -Credential (_credential_wrapper @params)
     }
 
+    if(-not $ConfigHash.ContainsKey((_config_url_key))){
+        $ConfigHash[(_config_url_key)] = $jserver
+    }
+
+if(-not $ConfigHash.ContainsKey((_config_user_key))){
+        $ConfigHash[(_config_user_key)] = $jira_session.username
+    }
+    
+
     return $ConfigHash
+}
+
+#doing this because mocking out "get-credential" wasn't working
+function _credential_wrapper {
+    param(
+        [Parameter(ValueFromRemainingArguments, HelpMessage="Any param that is your config can be overwritten as -CLI Argument")]
+        [array]$PassThruParams
+    );
+     $h = Convert-ArrayToHash @PassThruParams
+     Get-Credential @h
 }
 
 function _validate_jyaml {
@@ -267,7 +349,6 @@ function Get-JCustomFieldHash {
         [hashtable]$ConfigHash,
         [Parameter(ValueFromRemainingArguments, HelpMessage="Any param that is your config can be overwritten as -CLI Argument")]
         $BonusParams
-
     );
 
     if(-not $ConfigHash){
@@ -311,40 +392,57 @@ function _resolve_env_config { #returns a hash from ini, ENV, and cli params
     param(
         [Parameter(ValueFromRemainingArguments, HelpMessage="Any param that is your config can be overwritten as -CLI Argument")]
         [array]$PassThruParams
-    )
+    );
+
+    $file = _resolve_config_file
+    if( -not $file ) { return }
 
     $env_hashtable = @{}
-    $file = _resolve_config_file
-    if($file){
-        try {
-            $env_hashtable = get-ini -path $file
-        }catch {
-            throw [System.IO.FileLoadException]"bad ini config file: $file"
-        }
-
-    }else {
-        Write-PSFMessage -message "No config file... skipping ENV load too" -verbose
-        return;
+    try {
+        $env_hashtable = Get-Ini -path $file -NoSections
+    }catch {
+        throw [System.IO.FileLoadException]"bad ini config file: $file"
     }
 
     $env_hashtable = Join-EnvToConfig -ConfigHash $env_hashtable
 
     if($PassThruParams) {
-        $hash_PassThruParams = Convert-ArrayToHash @PassThruParams
-        @($hash_PassThruParams.keys) | foreach-object { $env_hashtable[$_] = $hash_PassThruParams[$_] }
+#remember our ini file has sections;
+#example:
+# [jiraclient]
+# key=value
+# we aren't making cli params specify which section so we have to look harder
+
+        $hash_PassThruParams = Convert-ArrayToHash -Strip @PassThruParams;
+
+         foreach($key in $hash_PassThruParams.keys){
+             $env_hashtable[$key] = $hash_PassThruParams[$key]
+         }
     }
 
     return $env_hashtable
 }
 
+function _config_file_in_user_home {
+    return Join-Path -Path $Env:HOME -ChildPath (_config_ini_name)
+}
+function _config_file_in_current_dir {
+    return Join-Path -Path (get-location).path -ChildPath (_config_ini_name)
+}
+
 function _resolve_config_file {
-    foreach ($p in @($Env:HOME,  (get-location).path) ) {
-        $maybe_rc = Join-Path -Path $p -ChildPath (_config_ini_name)
-        if(Test-Path -Path $p and Test-Path -Path $maybe_rc) {
-            return $maybe_rc
+    $config_file
+    foreach ($file in @( (_config_file_in_user_home), (_config_file_in_current_dir) )){
+        if(Test-Path -Path $file ) {
+            $config_file = $file
+
+            Write-PSFMessage -message "Config file found: $config_file" -verbose
+
+            break
         }
     }
-    return;
+
+    return $config_file;
 }
 
 function Get-Ini {
@@ -363,16 +461,20 @@ function Get-Ini {
         })]
         [string]$Path,
         [Parameter( HelpMessage="this is the content of your ini file; be sure to: gc foo.ini | out-string")]
-        [string[]]$Text
+        [string[]]$Text,
+        [Parameter( HelpMessage="if you ini has sections.. this will flatten into one hash")]
+        [switch]$NoSections
     )
 
     Process {
+        if($env:vb){ $verbosepreference = $env:vb }
+
         if(!$path -and !$text){
            throw " -Path or -Text are required arguments"
         }
 
         if(! $text) {
-            $text = get-content -path $path
+            $text = Get-Content -path $path
         }
 
         $ini_content = _parse_ini_content -Text $text
@@ -384,18 +486,12 @@ function Get-Ini {
         [string]$section=""
         $section_regex = "^\[.*\]$";
 
-        $i = 0;
-        if($env:vb){ $verbosepreference = $env:vb }
+
         foreach ($line in $ini_content) {
             $line = $line.trim()
             if($line -match "^$"){
                 continue;
             }
-
-            $i++;
-
-            $str = $i.tostring() + " " + $line
-            write-verbose $str
 
             #this is not the first section.. but a subsequent section if it exists
             #we write all the collected data then redeclare a section
@@ -429,6 +525,17 @@ function Get-Ini {
             $ini_obj[$section] = $hash
         }
 
+        if($NoSections){
+            $new_ini = @{}
+            foreach ($section_name in $ini_obj.keys){
+                foreach ($key in $ini_obj[$section_name].keys){
+                    $new_ini[$key] = $ini_obj[$section_name][$key];
+                }
+            }
+
+            $ini_obj = $new_ini;
+        }
+
         return $ini_obj
     }
 }
@@ -441,15 +548,15 @@ function Join-EnvToConfig {
         [hashtable]$envHash
     )
 
+    if($env:vb){ $verbosepreference = $env:vb }
+
     if(-not $envHash){
         $envHash = Get-EnvHash
     }
 
-    if($env:vb){ $verbosepreference = $env:vb }
     $config_copy = $configHash.clone();
 
     foreach( $key in $config_copy.keys){
-        write-verbose "key check: $key"
         if($ConfigHash[$key] -is [hashtable]){
             $configHash[$key] =
                 Join-EnvToConfig -ConfigHash $config_copy[$key] -envHash $envHash
@@ -458,7 +565,7 @@ function Join-EnvToConfig {
         }
 
         if($envHash.containsKey($key)){
-            write-verbose "Config Override by ENV: $key"
+            Write-PSFMessage -message "Config Override by ENV: $key" -verbose
             $configHash[$key] = $envHash[$key]
         }
     }
@@ -485,6 +592,8 @@ function _parse_ini_content {
 #perl example: my %hash = @array; #note array must be even
 function Convert-ArrayToHash  {
     param(
+        [parameter(HelpMessage= "strip off - of keys")]
+        [switch]$Strip,
         [parameter(HelpMessage= "be sure to splat your arrays when invoking", ValueFromRemainingArguments)]
         [array]$array
         )
@@ -500,7 +609,7 @@ function Convert-ArrayToHash  {
 
         #trim off "-"
         $key = $array[$i].toString();
-        if($key -match "^-"){
+        if($strip -and $key -match "^-"){
             $key = $key.substring(1 , ($key.length - 1))
         }
 
@@ -510,4 +619,4 @@ function Convert-ArrayToHash  {
     return $hash
 }
 
-Export-ModuleMember -Function 'Get-*','Join-*','Sync-*', 'Convert-*'
+#Export-ModuleMember -Function 'Get-*','Join-*','Sync-*', 'Convert-*'

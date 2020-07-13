@@ -1,0 +1,17 @@
+[jiraclient]
+jiraurl = https://jira.gsc.wustl.edu/
+user = myname
+
+[issues]
+project = INFOSYS
+type = story
+priority = Normal
+
+# -- Default assignee
+#assignee = myname
+
+# -- Component
+#components = CSA
+
+# -- Fix Version
+#fixVersions = Backlog
