@@ -87,7 +87,6 @@ foo=bar
 
             }
         }
-
         
     }
 }
@@ -146,13 +145,13 @@ Describe "Get-EnvHash Tests" -tag "external" {
        $hash.containsKey("OS")
     }
 }
-Describe "Init-JYaml Tests" {
-    It "Init-JYaml"  {
+Describe "Update-JYamlConfig Tests" {
+    It "Update-JYamlConfig"  {
         $config_file = Join-Path $TestDrive  "foo.configrc"
         add-content -value $null -path $config_file
         mock _config_file_in_user_home {$config_file}
 
-        $file =Init-JYaml -JiraUrl "https:\foo.bar.jira.com" -JiraUser "bobby"
+        $file =Update-JYamlConfig -JiraUrl "https:\foo.bar.jira.com" -JiraUser "bobby"
         (test-path $file) | should -be $true
         $generated_ini = Get-Content $file
         $generated_ini | should -not -benullorempty
@@ -203,8 +202,20 @@ Describe "yaml tests" {
             $empty_yaml_file | should -exist
             $content = Get-Content $empty_yaml_file
             (!$content) | should -be $true
-            #get-jyaml -YamlFile $empty_yaml_file
             {Get-JYaml -YamlFile $empty_yaml_file} | Should -throw -ExceptionType([System.IO.FileLoadException])
+        }
+
+    It "multiple epics yaml" {
+            $base= split-path $PSScriptroot
+            $yaml_file = "$base/examples/ex2.yaml"
+            $yaml_file | should -exist
+            $content = Get-Content $yaml_file
+            $content | should -not -benullorempty
+            ($struct) = Get-JYaml -YamlFile $yaml_file
+            #Write-PSFMessage "foo" -Debug
+            #$struct | Should -not -benullorempty
+            $struct[0] | Should -not -benullorempty
+            $struct[0].summary | Should -be "This is an Epic"
         }
 
         It "malformed yaml" -tag "disabled" {
@@ -212,8 +223,6 @@ Describe "yaml tests" {
         }
     }
 }
-
-
 
 Describe "Sync-JYaml" -tag "external" {
     It "bad params" {

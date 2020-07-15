@@ -27,7 +27,7 @@ function Get-JYaml {
     )
 
     $yaml_array_of_hashtables = @{};
-    $yaml_struct; # could be hash (1 epic) or an array of epics
+    $yaml_struct = $null; # could be hash (1 epic) or an array of epics
 
     try {
         $yaml_struct = get-content $YamlFile | ConvertFrom-Yaml;
@@ -36,15 +36,16 @@ function Get-JYaml {
             throw [System.IO.FileLoadException]"yaml file is empty"
         }
 
-        if (( $yaml_struct -isnot [hashtable]) -or ( $yaml_struct -isnot [array])){
-            throw [System.IO.FileLoadException]"bad yaml is not a hashtable or array"
+        if (($yaml_struct -isnot [hashtable]) -and ($yaml_struct -isnot [array]) -and ($yaml_struct -isnot [System.Collections.Generic.List[System.Object]]) ){
+            Write-PSFMessage -message (ConvertTo-Json $yaml_struct)  -verbose
+            throw [System.IO.FileLoadException]"yaml is not a hashtable or array"
         }
 
         if ($yaml_struct -is [hashtable]){
-            $yaml_array_of_hashtables +=   $yaml_struct
+            $yaml_array_of_hashtables +=  $yaml_struct
 
         }else {
-            $yaml_array_of_hashtables =   $yaml_struct
+            $yaml_array_of_hashtables =  $yaml_struct
         }
 
     } catch {
@@ -52,8 +53,8 @@ function Get-JYaml {
         throw
     }
 
-    Write-PSFMessage -message "Loaded yaml file: $YamlFile" -verbose
-    return $yaml_array_of_hashtables;
+    #Write-PSFMessage -message "Loaded yaml file: $YamlFile" -verbose
+    $yaml_array_of_hashtables;
 }
 
 #yaml file struct like this:
@@ -175,7 +176,7 @@ $investigate this vs using the jira-session
 
 
 #this is not called by other methods; it is a user setup option/convenience method
-function Init-JYaml {
+function Update-JYamlConfig {
     param(
         # Parameter help description
         [Parameter(HelpMessage="Name of JiraUrl")]
@@ -190,12 +191,12 @@ function Init-JYaml {
     }
 
     if(-not $JiraUrl){
-        $JiraUrl = Read-Host "Enter Jira url: "
+        $JiraUrl = Read-Host "Enter Jira url"
         if(-not $JiraUrl) { throw "jira_url is required"}
     }
 
     if(-not $JiraUser){
-        $JiraUser = Read-Host "Enter Jira username for authentication: "
+        $JiraUser = Read-Host "Enter Jira username for authentication"
         if(-not $JiraUser) { throw "jira_user is required"}
     }
 
