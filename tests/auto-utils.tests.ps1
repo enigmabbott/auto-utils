@@ -56,20 +56,20 @@ foo=bar
                     return New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList $User, $PWord 
                 }
 
-                Set-JiraConfigServer -Server "foo"
+                $cf_name = "foo.configrc"
+                $config_file = Join-Path $TestDrive $cf_name 
+                mock _resolve_config_file -MockWith { $config_file }
 
-                #$config_file = Join-Path $TestDrive  "foo.configrc"
-                #add-content -value $null -path $config_file
-                #mock _config_file_in_user_home {$config_file}
+                Set-JiraConfigServer -Server "foo"
             }
 
             It "no ini no ENV" {
                 $verbosepreference = "Continue"
+                $file = _resolve_config_file;
+                $file | should -be $config_file
+
                 {_jyaml_init_config} | Should -throw -ExceptionType([System.IO.FileLoadException])
                 {_jyaml_init_config -JiraUrl "mybar"} | Should -throw -ExceptionType([System.IO.FileLoadException])
-                #$ConfigHash = _jyaml_init_config -JiraUrl 'mybar'
-                #$ConfigHash | should -benullorempty
-                #write-verbose (ConvertTo-Json $ConfigHash)
 
             }
 
@@ -77,17 +77,23 @@ foo=bar
             It "no ini and ENV"  {
                 $VerbosePreference = "Continue"
                 $key = _config_url_key
-                $fake_url = "https:\\awesomeATL.jira.com"
+                $fake_url = "https://awesomeATL.jira.com"
                 $env_var_name =  '$env:' +$key
                 $ex_string =  $env_var_name + ' = "' + $fake_url +'"'
                 invoke-expression $ex_string
                 $val = invoke-expression $env_var_name
                 $val | should -be $fake_url
                 {_jyaml_init_config} | Should -throw -ExceptionType([System.IO.FileLoadException])
+                $unwind = "remove-item Env:$key"
+
+                invoke-expression $unwind
 
             }
         }
-        
+
+        Context "_validate_jyaml" {
+
+        }
     }
 }
 
@@ -170,7 +176,7 @@ Describe "Join-EnvToConfig Tests" {
             };
         }
 
-        It "no manipulation"{
+        It "no manipulation" {
             $hash2 = Join-EnvToConfig -configHash $config_hash
             $hash2 | should -not -BeNullOrEmpty
             $hash2.containsKey("s1") | should -be $true
@@ -230,7 +236,7 @@ Describe "Sync-JYaml" -tag "external" {
     }
 }
 
-Describe "Show-JYamlConfig Tests" -tag "THIS"{
+Describe "Show-JYamlConfig Tests" {
     It "Show-JYamlConfig"  {
         $base= split-path $PSScriptroot
         $config_file = Join-Path $base "\examples\.poshjiraclientrc" 
@@ -239,23 +245,21 @@ Describe "Show-JYamlConfig Tests" -tag "THIS"{
 
         $string = Show-JYamlConfig
         $string | should -not -benullorempty
-
-        #$string =Show-JYamlConfig -JiraUrl "https:\foo.bar.jira.com" -JiraUser "bobby"
-        #(test-path $file) | should -be $true
-        #$generated_ini = Get-Content $file
-        #$generated_ini | should -not -benullorempty
-        #$hits = $generated_ini | Select-String -Pattern 'JiraUrl'
-        #$hits | should -not -benullorempty
     }
 }
 
-#todo:
-#show-jyamlconfig prompts for password and doesn't show whether password is actually set
+Describe "Get-JCustomFieldHash Tests" -tag "THIS" {
+    It "Get-JCustomFieldHash FAILS"  {
+        $hash = Get-JCustomFieldHash
+    }
+
+    It "Get-JCustomFieldHash Success"  {
+
+    }
+}
 
 
 
-#test jira config server
-#test jira session
 #test jira fetch fields
 #test parse jira yaml ...valid keys
 #test issue create epic

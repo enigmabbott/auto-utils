@@ -57,6 +57,24 @@ function Get-JYaml {
     $yaml_array_of_hashtables;
 }
 
+<#
+.SYNOPSIS
+Dumps resolved Configuration hashtable
+Config is resolved from a Base ini file; 
+Then evaluation of Environment variables with SAME NAME can override INI.
+Last CLI args can override INI and ENV vars.
+
+Any value in INI can be an ENV or CLI argument;
+-ConfigFile .\my_local_config.ini #override default config file in your home dir
+
+See "Update-JYamlConfig" to create default ini
+
+Related
+    JiraPS\Get-JiraConfigServer;
+    JiraPS\Get-JiraSession
+
+#>
+
 function Show-JYamlConfig {
     param(
         [Parameter(HelpMessage="Config has already been resolved")]
@@ -264,33 +282,30 @@ function _jyaml_init_config {
         [array]$PassThruParams
     )
 
-#always override config w/ cli... BUT NOTE we don't set them in PSProperty
-    $ConfigHash = @{}
-    if($PassThruParams) {
-        $ConfigHash = _resolve_env_config @PassThruParams; # or FATAL
-        if(-not $ConfigHash) {
+    if(-not $PassThruParams){
+        $PassThruParams = @();
+    }
 
-            Write-PSFMessage -message "No config file... execute Init-JYaml" -verbose
-            throw "Config file is required" 
-        }
-    }else {
-        $ConfigHash = _resolve_env_config 
-
+    $ConfigHash = _resolve_env_config @PassThruParams; # or FATAL
+    
+    if(-not $ConfigHash){
+        Write-PSFMessage -Level Warning -message "No config! ... execute Init-JYaml" -verbose
+        throw "Config from ini, ENV or CLI is required" 
     }
 
     $jserver = JiraPS\Get-JiraConfigServer;
-    if( ($jserver -ne $null) -and ($jserver -eq 'foo')) {
+    if( ($jserver -ne $null) -and ($jserver -eq 'foo') ) {
             $jserver = $null
     }
 
     $jira_uri_key = _config_url_key
     $reset_server_flag = $false
 
-    if($ConfigHash.ContainsKey($jira_uri_key) ){
+    if( $ConfigHash.ContainsKey($jira_uri_key) ){
         $uri_from_config = $ConfigHash[ $jira_uri_key ];
 
         if( $jserver -and ($uri_from_config -ne $jserver )){
-            Write-PSFMessage -message "url from Get-JiraConfigServer [$jserver] differs from config; setting to: $uri_from_config " -verbose
+            Write-PSFMessage -message "resolved url differs from Get-JiraConfigServer [$jserver]; setting to: $uri_from_config " -verbose
             JiraPS\Set-JiraConfigServer $uri_from_config
             $reset_server_flag = $true
 
@@ -301,18 +316,13 @@ function _jyaml_init_config {
 
         }
 
-    } elseif (-not $jserver ) {
+    } elseif ( -not $jserver ) {
         throw "need $jira_uri_key in config or as cli argument"
     }
 
-    if(-not $ConfigHash.ContainsKey((_config_url_key))){
+    if( -not $ConfigHash.ContainsKey((_config_url_key)) ){
         $ConfigHash[(_config_url_key)] = $jserver
     }
-
-    if($noInitSession){
-        return $ConfigHash
-    }
-
 
     $jira_session = JiraPS\Get-JiraSession
 
@@ -320,22 +330,47 @@ function _jyaml_init_config {
 
     if( $ConfigHash["credential"] ){
          Write-PSFMessage -message "Resetting credential " -verbose
-         $jira_session = New-JiraSession -Credential $ConfigHash["credential"]
+         try {
+            $jira_session = New-JiraSession -Credential $ConfigHash["credential"]
 
-    } elseif (!$jira_session){
+        } catch {
+            Write-PSFMessage -Level Warning -Message "Failed New-JiraSession " -ErrorRecord $_
+            throw "Bad JIRA session" 
+
+        }
+
+        if(-not $jira_session){
+            Write-PSFMessage -Level Warning -Message "Failed to init New-JiraSession; Confirm url, user, password"
+            throw "Bad JIRA session" 
+
+        }
+
+
+    } elseif ( !$jira_session -and ! $noInitSession ){
         $params = @{"Message" = "Enter params for JIRA: $jserver" }
 
         $user_key = _config_user_key ;
-        if($ConfigHash[$user_key]){
+        if( $ConfigHash[$user_key] ){
             $params["username"] =  $ConfigHash[$user_key]
         }
 
-        $jira_session = New-JiraSession -Credential (_credential_wrapper @params)
+        try {
+            $jira_session = New-JiraSession -Credential (_credential_wrapper @params)
+
+        } catch {
+            Write-PSFMessage -Level Warning -Message "Failed New-JiraSession " -ErrorRecord $_
+            throw "Bad JIRA session" 
+
+        }
     }
 
-
-    if(-not $ConfigHash.ContainsKey((_config_user_key))){
+    if( $jira_session ) {
         $ConfigHash[(_config_user_key)] = $jira_session.username
+        $ConfigHash["JiraSession"] = $jira_session
+
+    }else {
+        $ConfigHash["NoJiraSession"] = $true
+        
     }
 
     return $ConfigHash
@@ -347,6 +382,7 @@ function _credential_wrapper {
         [Parameter(ValueFromRemainingArguments, HelpMessage="Any param that is your config can be overwritten as -CLI Argument")]
         [array]$PassThruParams
     );
+
      $h = Convert-ArrayToHash -Strip @PassThruParams 
      Get-Credential @h
 }
@@ -361,22 +397,22 @@ function _validate_jyaml {
 
     $fields = $ConfigHash[(_config_jira_fields_key)]
 
-    if(-not $fields){
+    if( -not $fields ){
         throw "jira fields should be resolved earlier... this is a developer error"
     }
 
     $errors = $false
 
-    foreach ($proto_issue in $YamlArray){
-        foreach ($key in $proto_issue.keys){
-            if(-not $fields[$key]){
+    foreach ( $proto_issue in $YamlArray ){
+        foreach ( $key in $proto_issue.keys ){
+            if( -not $fields[$key] ){
                 Write-PSFMessage -Level Warning -message "Invalid yaml; key: $key is not among the supported fields of your jira instance" -verbose;
                 $errors = $true
             }
         }
     }
 
-    if($errors){
+    if( $errors ){
         throw [System.IO.InvalidDataException]"Bad Yaml";
     }
 
@@ -391,7 +427,7 @@ function Get-JCustomFieldHash {
         $BonusParams
     );
 
-    if(-not $ConfigHash){
+    if( -not $ConfigHash ){
         $ConfigHash = _jyaml_init_config @BonusParams
     }
 
@@ -399,7 +435,7 @@ function Get-JCustomFieldHash {
 
     $field_hash = @{}
 #support both name and ID
-    $fields | foreach-item {
+    $fields | ForEach-Object {
         $field_hash[$_.ID] = $_;
         $field_hash[$_.name] = $_
         };
@@ -419,8 +455,8 @@ function  _validate_config_for_required_params {
         [hashtable]$ConfigHash
     )
 
-   foreach ( $required in @("JiraUrl", "JiraProject", "credential")) {
-        if( -not $ConfigHash[$required]) {
+   foreach ( $required in @("JiraUrl", "JiraProject", "credential") ){
+        if( -not $ConfigHash[$required] ) {
             throw [System.MissingFieldException]"missing field: $required"
         }
     }
@@ -434,19 +470,34 @@ function _resolve_env_config { #returns a hash from ini, ENV, and cli params
         [array]$PassThruParams
     );
 
-    $file = _resolve_config_file
-    if( -not $file ) { return }
+    $cfg_file = $null;
+    $hash_PassThruParams = $null;
+    if( $PassThruParams ) {
+        $hash_PassThruParams = Convert-ArrayToHash -Strip @PassThruParams;
+
+        if( $hash_PassThruParams.containsKey("ConfigFile") ){
+            $cfg_file =  $hash_PassThruParams["ConfigFile"]
+
+        }
+    }
+
+    if( -not $cfg_file ) {
+        $cfg_file = _resolve_config_file
+    }
+
+    if( -not $cfg_file ) { return }
 
     $env_hashtable = @{}
+
     try {
-        $env_hashtable = Get-Ini -path $file -NoSections
-    }catch {
-        throw [System.IO.FileLoadException] "bad ini config file: $file"
+        $env_hashtable = Get-Ini -path $cfg_file -NoSections
+    } catch {
+        throw [System.IO.FileLoadException] "bad ini config file: $cfg_file"
     }
 
     $env_hashtable = Join-EnvToConfig -ConfigHash $env_hashtable
 
-    if($PassThruParams) {
+    if( $PassThruParams ) {
 #remember our ini file has sections;
 #example:
 # [jiraclient]
@@ -455,7 +506,7 @@ function _resolve_env_config { #returns a hash from ini, ENV, and cli params
 
         $hash_PassThruParams = Convert-ArrayToHash -Strip @PassThruParams;
 
-         foreach($key in $hash_PassThruParams.keys){
+         foreach( $key in $hash_PassThruParams.keys ){
              $env_hashtable[$key] = $hash_PassThruParams[$key]
          }
     }
@@ -472,8 +523,8 @@ function _config_file_in_current_dir {
 
 function _resolve_config_file {
     $config_file = $null;
-    #foreach ($file in @( (_config_file_in_user_home), (_config_file_in_current_dir) )){
-    foreach ($file in @( (_config_file_in_user_home))){
+    foreach ( $file in @((_config_file_in_user_home)) ){
+        
         if(Test-Path -Path $file ) {
             $config_file = $file
 
@@ -486,7 +537,13 @@ function _resolve_config_file {
     return $config_file;
 }
 
+<#
+.SYNOPSIS
+Convert Ini file to a data-structure
+NoSections squashes all ini sections into one Hash
+#>
 function Get-Ini {
+
     Param(
         [Parameter(
                    HelpMessage="Enter the path to an INI file",
@@ -528,7 +585,7 @@ function Get-Ini {
         $section_regex = "^\[.*\]$";
 
 
-        foreach ($line in $ini_content) {
+        foreach ( $line in $ini_content ) {
             $line = $line.trim()
             if($line -match "^$"){
                 continue;
