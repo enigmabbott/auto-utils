@@ -57,8 +57,41 @@ function Get-JYaml {
     $yaml_array_of_hashtables;
 }
 
-#yaml file struct like this:
+function Show-JYamlConfig {
+    param(
+        [Parameter(HelpMessage="Config has already been resolved")]
+        [hashtable]$ConfigHash,
+        [Parameter(HelpMessage="Show JIRA fields")]
+        [switch]$ShowFields,
+        [Parameter(ValueFromRemainingArguments, HelpMessage="Any param that is your config can be overwritten as -CLI Argument")]
+        $BonusParams
 
+        #maybe provide -force this would update exsting epic... otherwise overwrite
+    )
+    $verbosepreference = "Continue"
+
+    if(-not $ConfigHash){
+#setup session and load config
+#this defines overall state of the session and takes the place of invocating an instance object which has similar properties
+#hoping this is the powershell way...
+#$ConfigHash = _jyaml_init_config -PassThruParams $BonusParams
+        $ConfigHash = _jyaml_init_config -noInitSession @BonusParams
+
+#this puts a JIRA's customfield IDs into the confighash; also validates crendentials and init handshake
+        if($ShowFields){
+            $fields_hash = Get-JCustomFieldHash  -ConfigHash $ConfigHash
+            if(-not $fields_hash ){
+                throw "Could not fetch jira custom fields.. FATAL";
+            }
+
+            $ConfigHash[ (_config_jira_fields_key) ] = $fields_hash
+        }
+    }
+
+    return ConvertTo-Json $ConfigHash;
+}
+
+#yaml file struct like this:
 
 function Sync-JYaml {
     param(
@@ -225,6 +258,8 @@ JiraUser = $JiraUser
 
 function _jyaml_init_config {
     param(
+        [Parameter(HelpMessage="Will not invoke get-credential and setting up of jira-session")]
+        [switch]$noInitSession,
         [Parameter(ValueFromRemainingArguments, HelpMessage="Any param that is your config can be overwritten as -CLI Argument")]
         [array]$PassThruParams
     )
@@ -254,8 +289,8 @@ function _jyaml_init_config {
     if($ConfigHash.ContainsKey($jira_uri_key) ){
         $uri_from_config = $ConfigHash[ $jira_uri_key ];
 
-        if( $jserver -and ($uri_form_config -ne $jserver )){
-            Write-PSFMessage -message "config differs from Get-JiraConfigServer.. setting to: $uri_from_config " -verbose
+        if( $jserver -and ($uri_from_config -ne $jserver )){
+            Write-PSFMessage -message "url from Get-JiraConfigServer [$jserver] differs from config; setting to: $uri_from_config " -verbose
             JiraPS\Set-JiraConfigServer $uri_from_config
             $reset_server_flag = $true
 
@@ -270,6 +305,15 @@ function _jyaml_init_config {
         throw "need $jira_uri_key in config or as cli argument"
     }
 
+    if(-not $ConfigHash.ContainsKey((_config_url_key))){
+        $ConfigHash[(_config_url_key)] = $jserver
+    }
+
+    if($noInitSession){
+        return $ConfigHash
+    }
+
+
     $jira_session = JiraPS\Get-JiraSession
 
     if( $reset_server_flag ) {$jira_session = $null }
@@ -279,7 +323,6 @@ function _jyaml_init_config {
          $jira_session = New-JiraSession -Credential $ConfigHash["credential"]
 
     } elseif (!$jira_session){
-        $jserver = JiraPS\Get-JiraConfigServer;
         $params = @{"Message" = "Enter params for JIRA: $jserver" }
 
         $user_key = _config_user_key ;
@@ -290,14 +333,10 @@ function _jyaml_init_config {
         $jira_session = New-JiraSession -Credential (_credential_wrapper @params)
     }
 
-    if(-not $ConfigHash.ContainsKey((_config_url_key))){
-        $ConfigHash[(_config_url_key)] = $jserver
-    }
 
-if(-not $ConfigHash.ContainsKey((_config_user_key))){
+    if(-not $ConfigHash.ContainsKey((_config_user_key))){
         $ConfigHash[(_config_user_key)] = $jira_session.username
     }
-    
 
     return $ConfigHash
 }
@@ -308,7 +347,7 @@ function _credential_wrapper {
         [Parameter(ValueFromRemainingArguments, HelpMessage="Any param that is your config can be overwritten as -CLI Argument")]
         [array]$PassThruParams
     );
-     $h = Convert-ArrayToHash @PassThruParams
+     $h = Convert-ArrayToHash -Strip @PassThruParams 
      Get-Credential @h
 }
 
@@ -402,7 +441,7 @@ function _resolve_env_config { #returns a hash from ini, ENV, and cli params
     try {
         $env_hashtable = Get-Ini -path $file -NoSections
     }catch {
-        throw [System.IO.FileLoadException]"bad ini config file: $file"
+        throw [System.IO.FileLoadException] "bad ini config file: $file"
     }
 
     $env_hashtable = Join-EnvToConfig -ConfigHash $env_hashtable
@@ -432,8 +471,9 @@ function _config_file_in_current_dir {
 }
 
 function _resolve_config_file {
-    $config_file
-    foreach ($file in @( (_config_file_in_user_home), (_config_file_in_current_dir) )){
+    $config_file = $null;
+    #foreach ($file in @( (_config_file_in_user_home), (_config_file_in_current_dir) )){
+    foreach ($file in @( (_config_file_in_user_home))){
         if(Test-Path -Path $file ) {
             $config_file = $file
 
@@ -566,7 +606,8 @@ function Join-EnvToConfig {
         }
 
         if($envHash.containsKey($key)){
-            Write-PSFMessage -message "Config Override by ENV: $key" -verbose
+            $value = $envHash[$key]
+            Write-PSFMessage -message "Config Override by ENV: $key : $value" -verbose
             $configHash[$key] = $envHash[$key]
         }
     }
@@ -593,7 +634,7 @@ function _parse_ini_content {
 #perl example: my %hash = @array; #note array must be even
 function Convert-ArrayToHash  {
     param(
-        [parameter(HelpMessage= "strip off - of keys")]
+        [parameter(HelpMessage= "strip off [^-|:$] of keys")]
         [switch]$Strip,
         [parameter(HelpMessage= "be sure to splat your arrays when invoking", ValueFromRemainingArguments)]
         [array]$array
@@ -612,6 +653,11 @@ function Convert-ArrayToHash  {
         $key = $array[$i].toString();
         if($strip -and $key -match "^-"){
             $key = $key.substring(1 , ($key.length - 1))
+        }
+
+
+        if($strip -and $key -match ":$"){
+            $key = $key.substring(0 , ($key.length - 2))
         }
 
         $hash[$key] = $array[$i +1];

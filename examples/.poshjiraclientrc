@@ -1,9 +1,9 @@
 [jiraclient]
-jiraurl = https://jira.gsc.wustl.edu/
+jiraurl = https://my-jira.com/
 user = myname
 
 [issues]
-project = INFOSYS
+project = FOO
 type = story
 priority = Normal
 

@@ -47,7 +47,7 @@ foo=bar
             }
         }
 
-        Context "parse config" -tag "THIS"{
+        Context "parse config" {
             BeforeAll {
                 remove-JiraSession
                 mock _credential_wrapper -MockWith  {
@@ -99,7 +99,7 @@ Describe "basic ini parser tests"  -tag "external" {
         }
 
         It "bad params" {
-            {get-ini} | should -Throw
+            {Get-Ini} | should -Throw
         }
 
         It "good params" {
@@ -230,7 +230,30 @@ Describe "Sync-JYaml" -tag "external" {
     }
 }
 
+Describe "Show-JYamlConfig Tests" -tag "THIS"{
+    It "Show-JYamlConfig"  {
+        $base= split-path $PSScriptroot
+        $config_file = Join-Path $base "\examples\.poshjiraclientrc" 
+
+        mock _config_file_in_user_home {$config_file}
+
+        $string = Show-JYamlConfig
+        $string | should -not -benullorempty
+
+        #$string =Show-JYamlConfig -JiraUrl "https:\foo.bar.jira.com" -JiraUser "bobby"
+        #(test-path $file) | should -be $true
+        #$generated_ini = Get-Content $file
+        #$generated_ini | should -not -benullorempty
+        #$hits = $generated_ini | Select-String -Pattern 'JiraUrl'
+        #$hits | should -not -benullorempty
+    }
+}
+
 #todo:
+#show-jyamlconfig prompts for password and doesn't show whether password is actually set
+
+
+
 #test jira config server
 #test jira session
 #test jira fetch fields
