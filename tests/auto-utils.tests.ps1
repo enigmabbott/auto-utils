@@ -12,7 +12,7 @@ InModuleScope $module_name {
         Context "simple ini file" {
             BeforeAll {
                 if($env:vb){ $verbosepreference = $env:vb }
-                $file = $global:TEST_CONFIG_DIR +"foo.ini"
+                $file = $global:TEST_CONFIG_DIR + "foo.ini"
             }
             #declaring this 2x is whack... please help; errors if you don't do it
             $file = $global:TEST_CONFIG_DIR +"foo.ini"
@@ -43,7 +43,6 @@ foo=bar
                 $x | should -not -benullorempty
                 $x | should -not -match 'comment'
                 $x | should -not -match 'bogus'
-
             }
         }
 
@@ -70,7 +69,6 @@ foo=bar
 
                 {_jyaml_init_config} | Should -throw -ExceptionType([System.IO.FileLoadException])
                 {_jyaml_init_config -JiraUrl "mybar"} | Should -throw -ExceptionType([System.IO.FileLoadException])
-
             }
 
             #we require an ini.. and ENV can override ini values but we can't have ENV vars w/o corresponding ini
@@ -87,12 +85,58 @@ foo=bar
                 $unwind = "remove-item Env:$key"
 
                 invoke-expression $unwind
-
             }
         }
 
-        Context "_validate_jyaml" {
+        Context "_validate_jyaml" -tag "THIS" {
+            BeforeAll {
+                $my_text = @"
+- epic name: Epic foo
+  summary: This is an Epic
+  description: My Epic description
+  stories:
+    - summary:  Story1 
+      description: story s1 has a short description
+"@
 
+                [array]$array_of_hash = Get-Jyaml -YamlString $my_text #note explicit cast to array so struct w 1 element doesn't flatten out
+                $array_of_hash | Should -not -benullorempty
+                #$array_of_hash | Should -BeOfType [array] #not sure why this doesn't work
+                $array_of_hash.count | Should -Be 1
+                $array_of_hash[0] | Should -BeOfType [hashtable]
+                $array_of_hash[0].summary | Should -be "This is an Epic"
+            }
+
+            It "jira yaml with bad-wrong jira-fields" {
+                $VerbosePreference = "Continue"
+            
+                $config_hash = @{
+                    "foo" = "foo" ;
+                    "JiraFields" = @{
+                        "field1" = "foo" ;
+                        "field2" = "bar";
+                        "monkey" = "eyeballs"
+                    };
+                };
+
+                {_validate_jyaml -YamlArray $array_of_hash -ConfigHash $config_hash} | should -Throw -ExceptionType ([System.IO.InvalidDataException])
+            }
+
+            It "jira yaml with all good fields" -tag "THIS" {
+                $VerbosePreference = "Continue"
+            
+                $config_hash = @{
+                    "foo" = "foo" ;
+                    "JiraFields" = @{
+                        "summary" = "foo" ;
+                        "description" = "bar";
+                        "stories" = "eyeballs";
+                        "epic name" = "eyeballs";
+                    };
+                };
+
+                (_validate_jyaml -YamlArray $array_of_hash -ConfigHash $config_hash) | should -Be $true
+            }
         }
     }
 }
@@ -218,8 +262,6 @@ Describe "yaml tests" {
             $content = Get-Content $yaml_file
             $content | should -not -benullorempty
             ($struct) = Get-JYaml -YamlFile $yaml_file
-            #Write-PSFMessage "foo" -Debug
-            #$struct | Should -not -benullorempty
             $struct[0] | Should -not -benullorempty
             $struct[0].summary | Should -be "This is an Epic"
         }
@@ -248,9 +290,9 @@ Describe "Show-JYamlConfig Tests" {
     }
 }
 
-Describe "Get-JCustomFieldHash Tests" -tag "THIS" {
+Describe "Get-JCustomFieldHash Tests" {
     It "Get-JCustomFieldHash FAILS"  {
-        $hash = Get-JCustomFieldHash
+    #    $hash = Get-JCustomFieldHash
     }
 
     It "Get-JCustomFieldHash Success"  {

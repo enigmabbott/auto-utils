@@ -11,40 +11,54 @@
 
 #returns an array of epic hashtables
 #this requires on config or ENV... straightup/basic function
+
+<#
+.SYNOPSIS
+Convert yaml to an array of hashtables
+
+
+#>
 function Get-JYaml {
     param(
-        [Parameter(
-            Mandatory,
-            HelpMessage="Enter Path to Yaml File containing JIRA Issues."
-        )]
+        [Parameter( HelpMessage="Enter Path to Yaml File containing JIRA Issues.")]
         [ValidateScript({
             if( -Not ($_ | Test-Path) ){
                 throw "File or folder does not exist"
             }
             return $true
         })]
-        [String]$YamlFile
+        [String]$YamlFile,
+        [Parameter( HelpMessage="yaml string")]
+        [string]$YamlString
     )
+
+    if(-not $YamlFile -and -not $YamlString ){
+        throw [System.Management.Automation.MethodInvocationException] "-YamlFile or -YamlString are required params"
+    }
 
     $yaml_array_of_hashtables = @{};
     $yaml_struct = $null; # could be hash (1 epic) or an array of epics
 
     try {
-        $yaml_struct = get-content $YamlFile | ConvertFrom-Yaml;
+        if(-not $YamlString){
+            $YamlString = get-content $YamlFile 
+        }
 
-        if(! $yaml_struct){
+        $yaml_struct = ConvertFrom-Yaml -Yaml $YamlString;
+
+        if(-not $yaml_struct){
             throw [System.IO.FileLoadException]"yaml file is empty"
         }
 
-        if (($yaml_struct -isnot [hashtable]) -and ($yaml_struct -isnot [array]) -and ($yaml_struct -isnot [System.Collections.Generic.List[System.Object]]) ){
+        if( ($yaml_struct -isnot [hashtable]) -and ($yaml_struct -isnot [array]) -and ($yaml_struct -isnot [System.Collections.Generic.List[System.Object]]) ){
             Write-PSFMessage -message (ConvertTo-Json $yaml_struct)  -verbose
             throw [System.IO.FileLoadException]"yaml is not a hashtable or array"
         }
 
-        if ($yaml_struct -is [hashtable]){
+        if( $yaml_struct -is [hashtable] ){
             $yaml_array_of_hashtables +=  $yaml_struct
 
-        }else {
+        } else {
             $yaml_array_of_hashtables =  $yaml_struct
         }
 
@@ -54,7 +68,7 @@ function Get-JYaml {
     }
 
     #Write-PSFMessage -message "Loaded yaml file: $YamlFile" -verbose
-    $yaml_array_of_hashtables;
+    return $yaml_array_of_hashtables;
 }
 
 <#
@@ -98,7 +112,7 @@ function Show-JYamlConfig {
 #this puts a JIRA's customfield IDs into the confighash; also validates crendentials and init handshake
         if($ShowFields){
             $fields_hash = Get-JCustomFieldHash  -ConfigHash $ConfigHash
-            if(-not $fields_hash ){
+            if( -not $fields_hash ){
                 throw "Could not fetch jira custom fields.. FATAL";
             }
 
@@ -126,11 +140,11 @@ function Sync-JYaml {
     )
 
 #validate args
-    if(-not $YamlArray -and -not $YamlFile) {
+    if(-not $YamlArray -and -not $YamlFile){
         throw [System.Management.Automation.MethodInvocationException] "-YamlFile or -YamlArray are required params"
     }
 
-    if( -Not $YamlArray ) {
+    if(-Not $YamlArray) {
         $YamlArray = Get-JYaml -YamlFile $YamlFile
     }
 
@@ -161,7 +175,7 @@ function Sync-JYaml {
 
         try {
             $epic = new-JiraIssue @epic_params
-        }catch {
+        } catch {
             throw "failed to create issue"
         }
 
@@ -237,7 +251,7 @@ function Update-JYamlConfig {
     )
 
     $file = _config_file_in_user_home
-    if(($file -ne $null) -and (test-path -Path $file) -and ((Get-Content $file) -ne $null)){
+    if( ($file -ne $null) -and (test-path -Path $file) -and ((Get-Content $file) -ne $null) ){
         throw "file exists: $file .. won't overwrite"
     }
 
@@ -316,7 +330,7 @@ function _jyaml_init_config {
 
         }
 
-    } elseif ( -not $jserver ) {
+    } elseif(-not $jserver) {
         throw "need $jira_uri_key in config or as cli argument"
     }
 
@@ -326,9 +340,9 @@ function _jyaml_init_config {
 
     $jira_session = JiraPS\Get-JiraSession
 
-    if( $reset_server_flag ) {$jira_session = $null }
+    if($reset_server_flag) {$jira_session = $null }
 
-    if( $ConfigHash["credential"] ){
+    if($ConfigHash["credential"]){
          Write-PSFMessage -message "Resetting credential " -verbose
          try {
             $jira_session = New-JiraSession -Credential $ConfigHash["credential"]
@@ -345,8 +359,7 @@ function _jyaml_init_config {
 
         }
 
-
-    } elseif ( !$jira_session -and ! $noInitSession ){
+    } elseif ( -not $jira_session -and -not $noInitSession ){
         $params = @{"Message" = "Enter params for JIRA: $jserver" }
 
         $user_key = _config_user_key ;
@@ -364,7 +377,7 @@ function _jyaml_init_config {
         }
     }
 
-    if( $jira_session ) {
+    if($jira_session){
         $ConfigHash[(_config_user_key)] = $jira_session.username
         $ConfigHash["JiraSession"] = $jira_session
 
@@ -391,13 +404,13 @@ function _validate_jyaml {
     param(
         [Parameter(Mandatory, HelpMessage="Requred From Get-JYaml")] #array of hashes
         [array]$YamlArray,
-        [Parameter(Mandatory,HelpMessage="Config should already be resolved")]
+        [Parameter(Mandatory, HelpMessage="Config should already be resolved")]
         [hashtable]$ConfigHash
     );
 
     $fields = $ConfigHash[(_config_jira_fields_key)]
 
-    if( -not $fields ){
+    if(-not $fields){
         throw "jira fields should be resolved earlier... this is a developer error"
     }
 
@@ -412,7 +425,7 @@ function _validate_jyaml {
         }
     }
 
-    if( $errors ){
+    if($errors){
         throw [System.IO.InvalidDataException]"Bad Yaml";
     }
 
@@ -427,7 +440,7 @@ function Get-JCustomFieldHash {
         $BonusParams
     );
 
-    if( -not $ConfigHash ){
+    if(-not $ConfigHash){
         $ConfigHash = _jyaml_init_config @BonusParams
     }
 
@@ -456,7 +469,7 @@ function  _validate_config_for_required_params {
     )
 
    foreach ( $required in @("JiraUrl", "JiraProject", "credential") ){
-        if( -not $ConfigHash[$required] ) {
+        if(-not $ConfigHash[$required]){
             throw [System.MissingFieldException]"missing field: $required"
         }
     }
@@ -472,7 +485,7 @@ function _resolve_env_config { #returns a hash from ini, ENV, and cli params
 
     $cfg_file = $null;
     $hash_PassThruParams = $null;
-    if( $PassThruParams ) {
+    if($PassThruParams){
         $hash_PassThruParams = Convert-ArrayToHash -Strip @PassThruParams;
 
         if( $hash_PassThruParams.containsKey("ConfigFile") ){
@@ -481,11 +494,11 @@ function _resolve_env_config { #returns a hash from ini, ENV, and cli params
         }
     }
 
-    if( -not $cfg_file ) {
+    if(-not $cfg_file){
         $cfg_file = _resolve_config_file
     }
 
-    if( -not $cfg_file ) { return }
+    if(-not $cfg_file){ return }
 
     $env_hashtable = @{}
 
@@ -497,7 +510,7 @@ function _resolve_env_config { #returns a hash from ini, ENV, and cli params
 
     $env_hashtable = Join-EnvToConfig -ConfigHash $env_hashtable
 
-    if( $PassThruParams ) {
+    if($PassThruParams){
 #remember our ini file has sections;
 #example:
 # [jiraclient]
@@ -525,7 +538,7 @@ function _resolve_config_file {
     $config_file = $null;
     foreach ( $file in @((_config_file_in_user_home)) ){
         
-        if(Test-Path -Path $file ) {
+        if(Test-Path -Path $file){
             $config_file = $file
 
             Write-PSFMessage -message "Config file found: $config_file" -verbose
@@ -567,17 +580,17 @@ function Get-Ini {
     Process {
         if($env:vb){ $verbosepreference = $env:vb }
 
-        if(!$path -and !$text){
+        if(-not $path -and -not $text){
            throw " -Path or -Text are required arguments"
         }
 
-        if(! $text) {
+        if(-not $text) {
             $text = Get-Content -path $path
         }
 
         $ini_content = _parse_ini_content -Text $text
 
-        if(! $ini_content){ throw "no ini content" }
+        if(-not $ini_content){ throw "no ini content" }
 
         $ini_obj = @{}
         $hash = @{}
@@ -585,7 +598,7 @@ function Get-Ini {
         $section_regex = "^\[.*\]$";
 
 
-        foreach ( $line in $ini_content ) {
+        foreach ($line in $ini_content){
             $line = $line.trim()
             if($line -match "^$"){
                 continue;
@@ -594,7 +607,7 @@ function Get-Ini {
             #this is not the first section.. but a subsequent section if it exists
             #we write all the collected data then redeclare a section
             #example:[my_section]
-            if (($line -match $section_regex) -AND $section ) {
+            if( ($line -match $section_regex) -AND $section ){
                 $ini_obj[$section] = $hash
 
                 #re init variables
@@ -603,10 +616,10 @@ function Get-Ini {
 
             #Get section name. This will only run for the first section heading
             #example:[my_section]
-            } elseif ($line -match $section_regex) {
+            } elseif ($line -match $section_regex){
                 $section = $line -replace "\[|\]",""
 
-            } elseif ($line -match "=") {
+            } elseif ($line -match "="){
                 $key,$value= $line.split("=").trim()
                 $hash[$key]= $value
 
@@ -619,7 +632,7 @@ function Get-Ini {
         #get last section
         if(!$section){ $section = "default"}
 
-        If ($hash.count -gt 0) {
+        if($hash.count -gt 0){
             $ini_obj[$section] = $hash
         }
 
@@ -654,7 +667,7 @@ function Join-EnvToConfig {
 
     $config_copy = $configHash.clone();
 
-    foreach( $key in $config_copy.keys){
+    foreach($key in $config_copy.keys){
         if($ConfigHash[$key] -is [hashtable]){
             $configHash[$key] =
                 Join-EnvToConfig -ConfigHash $config_copy[$key] -envHash $envHash
@@ -697,14 +710,14 @@ function Convert-ArrayToHash  {
         [array]$array
         )
 
-    if(($array.length) % 2 -ne 0) {
+    if(($array.length) % 2 -ne 0){
         throw [System.InvalidCastException]"odd number of elements in array can not be converted to hash"
     }
 
     $hash = @{};
 
-    for ($i = 0;  $i -lt $array.length ; $i++){
-        if ($i % 2  -ne 0 ){ Continue}
+    for($i = 0;  $i -lt $array.length ; $i++){
+        if($i % 2  -ne 0 ){ Continue}
 
         #trim off "-"
         $key = $array[$i].toString();
