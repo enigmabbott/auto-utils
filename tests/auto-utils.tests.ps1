@@ -88,7 +88,7 @@ foo=bar
             }
         }
 
-        Context "_validate_jyaml" -tag "THIS" {
+        Context "_validate_jyaml" {
             BeforeAll {
                 $my_text = @"
 - epic name: Epic foo
@@ -108,8 +108,6 @@ foo=bar
             }
 
             It "jira yaml with bad-wrong jira-fields" {
-                $VerbosePreference = "Continue"
-            
                 $config_hash = @{
                     "foo" = "foo" ;
                     "JiraFields" = @{
@@ -122,9 +120,7 @@ foo=bar
                 {_validate_jyaml -YamlArray $array_of_hash -ConfigHash $config_hash} | should -Throw -ExceptionType ([System.IO.InvalidDataException])
             }
 
-            It "jira yaml with all good fields" -tag "THIS" {
-                $VerbosePreference = "Continue"
-            
+            It "jira yaml with all good fields" {
                 $config_hash = @{
                     "foo" = "foo" ;
                     "JiraFields" = @{
@@ -137,7 +133,76 @@ foo=bar
 
                 (_validate_jyaml -YamlArray $array_of_hash -ConfigHash $config_hash) | should -Be $true
             }
+
+            It "jira yaml with subtasks bad value" {
+                #$VerbosePreference = "Continue"
+                $my_text = @"
+- epic name: Epic foo
+  summary: This is an Epic
+  description: My Epic description
+  stories:
+    - summary:  Story1 
+      description: story s1 has a short description
+      subtasks:
+        - summary: s1 st1 summary
+          description: s1 st1 description
+          bad-field: hey
+"@
+                $config_hash = @{
+                    "foo" = "foo" ;
+                    "JiraFields" = @{
+                        "summary" = "foo" ;
+                        "description" = "bar";
+                        "stories" = "eyeballs";
+                        "epic name" = "eyeballs";
+                        "subtasks" = "foo";
+                    };
+                };
+
+                [array]$array_of_hash = Get-Jyaml -YamlString $my_text #note explicit cast to array so struct w 1 element doesn't flatten out
+                $array_of_hash | Should -not -benullorempty
+                {_validate_jyaml -YamlArray $array_of_hash -ConfigHash $config_hash} | should -Throw -ExceptionType ([System.IO.InvalidDataException])
+                #(_validate_jyaml -YamlArray $array_of_hash -ConfigHash $config_hash) | should -Be $true
+            }
         }
+
+        Context "issue related functions" -tag "THIS" {
+            It "_issue_is_epic" {
+                $my_epic= @"
+- epic name: Epic foo
+  summary: This is an Epic
+  description: My Epic description
+"@
+
+                $config_hash = @{
+                    "foo" = "foo" ;
+                    "JiraFields" = @{
+                        "summary" = "foo" ;
+                        "description" = "bar";
+                        "stories" = "eyeballs";
+                        "epic name" = "eyeballs";
+                        "subtasks" = "foo";
+                    };
+                };
+
+                [array]$array_of_hash = Get-Jyaml -YamlString $my_epic #note explicit cast to array so struct w 1 element doesn't flatten out
+                $array_of_hash | Should -not -benullorempty
+                $array_of_hash.count| Should -be 1
+
+                (_issue_is_epic -IssueStruct $array_of_hash[0] -ConfigHash $config_hash) | Should -be $true
+
+                $my_non_epic= @"
+- summary: This is an Epic
+  description: My Epic description
+"@
+              [array]$array_of_hash = Get-Jyaml -YamlString $my_non_epic #note explicit cast to array so struct w 1 element doesn't flatten out
+                $array_of_hash | Should -not -benullorempty
+                $array_of_hash.count| Should -be 1
+
+                (_issue_is_epic -IssueStruct $array_of_hash[0] -ConfigHash $config_hash) | Should -be $false
+            }
+        }
+            #TODO: allow project to be defined in Config and/or yaml
     }
 }
 
@@ -255,7 +320,8 @@ Describe "yaml tests" {
             {Get-JYaml -YamlFile $empty_yaml_file} | Should -throw -ExceptionType([System.IO.FileLoadException])
         }
 
-    It "multiple epics yaml" {
+        It "multiple epics yaml" {
+            $verbosepreference = "Continue"
             $base= split-path $PSScriptroot
             $yaml_file = "$base/examples/ex2.yaml"
             $yaml_file | should -exist
@@ -291,19 +357,33 @@ Describe "Show-JYamlConfig Tests" {
 }
 
 Describe "Get-JCustomFieldHash Tests" {
+    #this actually fetches data from a JIRA SERVER
+    #we need to mock that out
     It "Get-JCustomFieldHash FAILS"  {
-    #    $hash = Get-JCustomFieldHash
+        mock Get-JiraField -MockWith  { throw "bad things happen" }
+        {Get-JCustomFieldHash -ConfigHash @{one="one"}} | should -Throw -ExceptionType ([System.Management.Automation.RuntimeException])
+
+        mock Get-JiraField -MockWith  { "" }
+        {Get-JCustomFieldHash -ConfigHash @{one="one"}} | should -Throw -ExceptionType ([System.IO.InvalidDataException])
     }
 
-    It "Get-JCustomFieldHash Success"  {
+    It "Get-JCustomFieldHash Success" {
+        $verbosepreference = "Continue"
+        mock Get-JiraField -MockWith  {
+                    @(
+                        @{ID=1;
+                          Name= "foo"
+                        } 
+                    );
+         }
+
+        $hash = Get-JCustomFieldHash -ConfigHash (@{one="one"})
+        $hash | should -not -benullorempty
+        write-verbose (ConvertTo-Json $hash)
 
     }
 }
 
-
-
-#test jira fetch fields
-#test parse jira yaml ...valid keys
 #test issue create epic
 #test issue create epic and child
 #test issue create epic and child #fail if summary already exists

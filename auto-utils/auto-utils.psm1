@@ -41,7 +41,7 @@ function Get-JYaml {
 
     try {
         if(-not $YamlString){
-            $YamlString = get-content $YamlFile 
+            [string]$YamlString = get-content $YamlFile -raw
         }
 
         $yaml_struct = ConvertFrom-Yaml -Yaml $YamlString;
@@ -63,8 +63,8 @@ function Get-JYaml {
         }
 
     } catch {
-        Write-PSFMessage -Level Warning -Message "invalid yaml file: $YamlFile" -ErrorRecord $_
-        throw
+        Write-PSFMessage -Level Warning -Message "invalid yaml: $YamlString" -ErrorRecord $_
+        throw 
     }
 
     #Write-PSFMessage -message "Loaded yaml file: $YamlFile" -verbose
@@ -135,8 +135,6 @@ function Sync-JYaml {
         [hashtable]$ConfigHash,
         [Parameter(ValueFromRemainingArguments, HelpMessage="Any param that is your config can be overwritten as -CLI Argument")]
         $BonusParams
-
-        #maybe provide -force this would update exsting epic... otherwise overwrite
     )
 
 #validate args
@@ -168,16 +166,68 @@ function Sync-JYaml {
     _validate_jyaml($YamlArray) #should be fatal if missing required or has unknown params
 
 #might want to create a generic PreJiraIssue class and call methods rather than work on raw data-structures
-    foreach ($epic in $YamlArray) {
-        $epic_params = @{IssueType = "Epic"}
-        $epic.keys | where-object { $_ -notmatch "Stories" } | foreach-object  { $epic_params[$_] =$epic[$_] }
-        $epic_params = _validate_epic_params -EpicParams $epic_params
+    foreach ($proto_issue in $YamlArray) {
+        #is it an epic
+        if(_issue_is_epic -IssueStruct $proto_issue -ConfigHash $ConfigHash) {
+            _idempotent_epic_updates -IssueStruct $proto_issue -ConfigHash $ConfigHash
 
-        try {
-            $epic = new-JiraIssue @epic_params
-        } catch {
-            throw "failed to create issue"
+        }else {
+            _idempotent_issue_updates -IssueStruct $proto_issue -ConfigHash $ConfigHash
+
         }
+    }
+
+    return $true
+}
+
+function _issue_is_epic {
+    param(
+        [Parameter(Mandatory,HelpMessage="a hashtable create from parsed yaml")] #see Get-JYaml output
+        [hashtable] $IssueStruct,
+        [Parameter(HelpMessage="Config has already been resolved")]
+        [hashtable]$ConfigHash
+    )
+
+    #should we attempt to fix epics
+    if($IssueStruct.ContainsKey("epic name") -or $IssueStruct.ContainsKey("epic link")){
+        return $true
+
+    }
+
+    return $false
+}
+
+function _idempotent_epic_updates {
+    param(
+        [Parameter(Mandatory,HelpMessage="a hashtable create from parsed yaml")] #see Get-JYaml output
+        [hashtable] $IssueStruct,
+        [Parameter(HelpMessage="Config has already been resolved")]
+        [hashtable]$ConfigHash
+    )
+
+    return $true
+}
+
+function _idempotent_issue_updates {
+    param(
+        [Parameter(Mandatory,HelpMessage="a hashtable create from parsed yaml")] #see Get-JYaml output
+        [hashtable] $IssueStruct,
+        [Parameter(HelpMessage="Config has already been resolved")]
+        [hashtable]$ConfigHash
+    )
+
+    return $true
+}
+
+        #$epic_params = @{IssueType = "Epic"}
+        #$epic.keys | where-object { $_ -notmatch "Stories" } | foreach-object  { $epic_params[$_] = $epic[$_] }
+        #$epic_params = _validate_epic_params -EpicParams $epic_params
+
+        #try {
+        #    $epic = new-JiraIssue @epic_params
+        #} catch {
+        #    throw "failed to create issue"
+        #}
 
         #Set-JiraIssue -Issue $id.key -Assignee 'E141355'
 
@@ -192,9 +242,6 @@ $parameters = @{
 }
 #>
     #Set-JiraIssue @parameters -Issue $id.key
-
-    }
-}
 
 #returns bool
 function _is_older_than { #perhaps make this public? maybe there's already one out there?
@@ -416,12 +463,42 @@ function _validate_jyaml {
 
     $errors = $false
 
-    foreach ( $proto_issue in $YamlArray ){
-        foreach ( $key in $proto_issue.keys ){
-            if( -not $fields[$key] ){
-                Write-PSFMessage -Level Warning -message "Invalid yaml; key: $key is not among the supported fields of your jira instance" -verbose;
+    $checker = {
+        param($lookup_hash, $search)
+            if( -not $lookup_hash[$search] ){
+                Write-PSFMessage -Level Warning -message "Invalid yaml; key: $search is not among the supported fields of your jira instance" -verbose;
+                return $false  
+            }
+
+            return $true;
+        }
+
+#only maintain 3 tier hierarchy
+    foreach ($proto_issue in $YamlArray){
+        foreach ($key in $proto_issue.keys){
+            if(-not (& $checker $fields $key)){
                 $errors = $true
             }
+            
+            if($proto_issue.containsKey("stories")){
+                foreach ($proto_story in $proto_issue.stories){
+                    foreach ($skey in $proto_story.keys ){
+                        if( -not (& $checker $fields $skey)){
+                            $errors = $true
+                        }
+                    }
+
+                    if($proto_story.containsKey("subtasks")){
+                        foreach ($proto_subtask in $proto_story.subtasks){
+                            foreach ($staskkey in $proto_subtask.keys){
+                                if(-not (& $checker $fields $staskkey)){
+                                    $errors = $true
+                                }
+                            }
+                        }
+                    }
+                }
+            } 
         }
     }
 
@@ -444,13 +521,25 @@ function Get-JCustomFieldHash {
         $ConfigHash = _jyaml_init_config @BonusParams
     }
 
-    $fields =  Get-JiraField
+    $fields = $null
+
+    try { 
+        $fields =  Get-JiraField
+        if(-not $fields){
+            throw [System.IO.InvalidDataException]"no jira fields";
+        }
+
+    } catch {
+        Write-PSFMessage -Level Warning -Message "Could not fetch fields" -ErrorRecord $_
+        throw; 
+
+    }
 
     $field_hash = @{}
 #support both name and ID
     $fields | ForEach-Object {
-        $field_hash[$_.ID] = $_;
-        $field_hash[$_.name] = $_
+        $field_hash[$_.ID.toString().toLower()] = $_;
+        $field_hash[$_.name.toLower()] = $_
         };
 
     return $field_hash;
