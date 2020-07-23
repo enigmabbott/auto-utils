@@ -12,11 +12,15 @@
 #returns an array of epic hashtables
 #this requires on config or ENV... straightup/basic function
 
+function _config_jira_project_key { "project"}
+function _config_jira_url_key { "jiraurl"}
+function _config_jira_user_key { "jirauser"}
+function _config_jira_fields_key{ "jirafields" }  #this is resolved and shouldn't be provided
+function _config_ini_name { ".poshjiraclientrc"}
+
 <#
 .SYNOPSIS
 Convert yaml to an array of hashtables
-
-
 #>
 function Get-JYaml {
     param(
@@ -100,7 +104,7 @@ function Show-JYamlConfig {
 
         #maybe provide -force this would update exsting epic... otherwise overwrite
     )
-    $verbosepreference = "Continue"
+    #$verbosepreference = "Continue"
 
     if(-not $ConfigHash){
 #setup session and load config
@@ -184,7 +188,7 @@ function _issue_is_epic {
     param(
         [Parameter(Mandatory,HelpMessage="a hashtable create from parsed yaml")] #see Get-JYaml output
         [hashtable] $IssueStruct,
-        [Parameter(HelpMessage="Config has already been resolved")]
+        [Parameter(Mandatory,HelpMessage="Config has already been resolved")]
         [hashtable]$ConfigHash
     )
 
@@ -201,18 +205,72 @@ function _idempotent_epic_updates {
     param(
         [Parameter(Mandatory,HelpMessage="a hashtable create from parsed yaml")] #see Get-JYaml output
         [hashtable] $IssueStruct,
-        [Parameter(HelpMessage="Config has already been resolved")]
+        [Parameter(Mandatory,HelpMessage="Config has already been resolved")]
         [hashtable]$ConfigHash
     )
 
-    return $true
+    $project = _resolve_jira_project -IssueStruct $proto_issue -ConfigHash $ConfigHash
+    $issue = _jira_issue_search -ConfigHash $configHash -Project $project -Summary $IssueStruct.summary
+
+    if($issue){
+        Write-PSFMessage -Message ("Issue found: Project $project Summary: " + $issue.summary) -Verbose
+        #not quite idempotent yet
+
+    }else {
+        #create issue here
+
+    }
+
+    if($IssueStruct.containsKey("stories")){
+        _idempotent_issue_updates -IssueStruct $proto_issue -ConfigHash $ConfigHash
+    }
+    
+    return $true #return list of created/touched issue
+}
+
+function _jira_issue_search {
+    param(
+        [Parameter(Mandatory,HelpMessage="jira issue summary")] 
+        [string] $Summary,
+        [Parameter(Mandatory,HelpMessage="jira project")] 
+        [string] $Project,
+        [Parameter(Mandatory,HelpMessage="Config has already been resolved")]
+        [hashtable]$ConfigHash
+    )
+
+    if($ConfigHash.ContainsKey("_issues")){
+        if($ConfigHash._issues.ContainsKey($Project)){
+            if($ConfigHash._issues.$Project.ContainsKey($Summary)){
+                return $ConfigHash._issues.$Project.$Summary
+            }
+        }
+    }else {
+        $ConfigHash._issues =  @{}
+    }
+
+    $ex_string =  "JiraPS\Get-JiraIssue -Query 'Project  = $Project'"
+    $issues = invoke-expression $ex_string
+
+    $project_hash = @{}
+    if(-not $issues ){
+        return $null;
+    }else {
+        foreach($issue in $issues){
+            $s = $issue.summary
+            $project_hash[$s] = $issue
+        }
+    }
+
+    $ConfigHash._issues[$Project] = $project_hash
+
+    return (_jira_issue_search -Summary $Summary -ConfigHash $ConfigHash -Project $Project)
 }
 
 function _idempotent_issue_updates {
     param(
         [Parameter(Mandatory,HelpMessage="a hashtable create from parsed yaml")] #see Get-JYaml output
         [hashtable] $IssueStruct,
-        [Parameter(HelpMessage="Config has already been resolved")]
+        [Parameter(Mandatory,HelpMessage="Config has already been resolved")]
         [hashtable]$ConfigHash
     )
 
@@ -350,7 +408,7 @@ function _jyaml_init_config {
     $ConfigHash = _resolve_env_config @PassThruParams; # or FATAL
     
     if(-not $ConfigHash){
-        Write-PSFMessage -Level Warning -message "No config! ... execute Init-JYaml" -verbose
+        Write-PSFMessage -Level Warning -message "No config! ... execute Update-JYamlConfig" -verbose
         throw "Config from ini, ENV or CLI is required" 
     }
 
@@ -359,7 +417,7 @@ function _jyaml_init_config {
             $jserver = $null
     }
 
-    $jira_uri_key = _config_url_key
+    $jira_uri_key = _config_jira_url_key
     $reset_server_flag = $false
 
     if( $ConfigHash.ContainsKey($jira_uri_key) ){
@@ -381,8 +439,8 @@ function _jyaml_init_config {
         throw "need $jira_uri_key in config or as cli argument"
     }
 
-    if( -not $ConfigHash.ContainsKey((_config_url_key)) ){
-        $ConfigHash[(_config_url_key)] = $jserver
+    if( -not $ConfigHash.ContainsKey((_config_jira_url_key)) ){
+        $ConfigHash[(_config_jira_url_key)] = $jserver
     }
 
     $jira_session = JiraPS\Get-JiraSession
@@ -409,7 +467,7 @@ function _jyaml_init_config {
     } elseif ( -not $jira_session -and -not $noInitSession ){
         $params = @{"Message" = "Enter params for JIRA: $jserver" }
 
-        $user_key = _config_user_key ;
+        $user_key = _config_jira_user_key ;
         if( $ConfigHash[$user_key] ){
             $params["username"] =  $ConfigHash[$user_key]
         }
@@ -425,7 +483,7 @@ function _jyaml_init_config {
     }
 
     if($jira_session){
-        $ConfigHash[(_config_user_key)] = $jira_session.username
+        $ConfigHash[(_config_jira_user_key)] = $jira_session.username
         $ConfigHash["JiraSession"] = $jira_session
 
     }else {
@@ -447,6 +505,27 @@ function _credential_wrapper {
      Get-Credential @h
 }
 
+function _resolve_jira_project {
+    param(
+        [Parameter(Mandatory,HelpMessage="a hashtable create from parsed yaml")] #see Get-JYaml output
+        [hashtable] $IssueStruct,
+        [Parameter(Mandatory,HelpMessage="Config has already been resolved")]
+        [hashtable]$ConfigHash
+    )
+
+    $project = $ConfigHash[(_config_jira_project_key)]
+    if( -not $project -and -not $IssueStruct.containsKey((_config_jira_project_key)) ){
+        return $null  
+
+    } 
+
+    if(  $IssueStruct.containsKey((_config_jira_project_key)) ){
+        $project = $IssueStruct[ (_config_jira_project_key) ]
+    }
+
+    return $project
+}
+
 function _validate_jyaml {
     param(
         [Parameter(Mandatory, HelpMessage="Requred From Get-JYaml")] #array of hashes
@@ -463,35 +542,56 @@ function _validate_jyaml {
 
     $errors = $false
 
-    $checker = {
+    $field_checker = {
         param($lookup_hash, $search)
-            if( -not $lookup_hash[$search] ){
-                Write-PSFMessage -Level Warning -message "Invalid yaml; key: $search is not among the supported fields of your jira instance" -verbose;
-                return $false  
-            }
-
-            return $true;
+        if(-not $lookup_hash[$search]){
+            Write-PSFMessage -Level Warning -message "Invalid yaml; key: $search is not among the supported fields of your jira instance" -verbose;
+            return $false  
         }
+
+        return $true;
+    }
+
+    $summary_checker = {
+        param($proto)
+        if(-not $proto.containsKey("summary")){
+            Write-PSFMessage -Level Warning -Message (convertTo-Json $proto) -Verbose
+            throw [System.MissingFieldException]("missing required field [summary]")
+        }
+        return $true;
+    }
 
 #only maintain 3 tier hierarchy
     foreach ($proto_issue in $YamlArray){
+
+        $project = _resolve_jira_project -IssueStruct $proto_issue -ConfigHash $ConfigHash
+        if( -not $project ) {
+            throw [System.MissingFieldException]("missing required field [either global/config or issue level]: " + (_config_jira_project_key))
+
+        } 
+
+        $my_value = & $summary_checker $proto_issue;
+            
         foreach ($key in $proto_issue.keys){
-            if(-not (& $checker $fields $key)){
+            if(-not (& $field_checker $fields $key)){
                 $errors = $true
             }
             
             if($proto_issue.containsKey("stories")){
                 foreach ($proto_story in $proto_issue.stories){
+                    $my_value = & $summary_checker $proto_story;
+
                     foreach ($skey in $proto_story.keys ){
-                        if( -not (& $checker $fields $skey)){
+                        if( -not (& $field_checker $fields $skey)){
                             $errors = $true
                         }
                     }
 
                     if($proto_story.containsKey("subtasks")){
                         foreach ($proto_subtask in $proto_story.subtasks){
+                           $my_value = & $summary_checker $proto_subtask;
                             foreach ($staskkey in $proto_subtask.keys){
-                                if(-not (& $checker $fields $staskkey)){
+                                if(-not (& $field_checker $fields $staskkey)){
                                     $errors = $true
                                 }
                             }
@@ -508,6 +608,18 @@ function _validate_jyaml {
 
     return $true
 }
+
+<#
+.SYNOPSIS
+Shows fields in your JIRA instance which can be used/declared in your issue yaml
+
+Required: 
+    A local .ini config file (see: Update-JYamlConfig)
+    Credentials for a JIRA instance (you'll get prompted)
+
+Helpful: Get-JCustomFieldHash | ConvertTo-Json
+
+#>
 
 function Get-JCustomFieldHash {
     param(
@@ -538,17 +650,12 @@ function Get-JCustomFieldHash {
     $field_hash = @{}
 #support both name and ID
     $fields | ForEach-Object {
-        $field_hash[$_.ID.toString().toLower()] = $_;
-        $field_hash[$_.name.toLower()] = $_
+        $field_hash[$_.ID.toString()] = $_;
+        $field_hash[$_.name] = $_
         };
 
     return $field_hash;
 }
-
-function _config_url_key { "JiraUrl"}
-function _config_user_key { "JiraUser"}
-function _config_jira_fields_key{ "JiraFields" }  #this is resolved and shouldn't be provided
-function _config_ini_name { ".poshjiraclientrc"}
 
 #returns bolean
 function  _validate_config_for_required_params {
@@ -667,7 +774,6 @@ function Get-Ini {
     )
 
     Process {
-        if($env:vb){ $verbosepreference = $env:vb }
 
         if(-not $path -and -not $text){
            throw " -Path or -Text are required arguments"
@@ -747,8 +853,6 @@ function Join-EnvToConfig {
         [Parameter(HelpMessage="env: as hash")]
         [hashtable]$envHash
     )
-
-    if($env:vb){ $verbosepreference = $env:vb }
 
     if(-not $envHash){
         $envHash = Get-EnvHash

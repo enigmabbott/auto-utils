@@ -11,7 +11,6 @@ InModuleScope $module_name {
     Describe "test not exported functions" -tag "internal" {
         Context "simple ini file" {
             BeforeAll {
-                if($env:vb){ $verbosepreference = $env:vb }
                 $file = $global:TEST_CONFIG_DIR + "foo.ini"
             }
             #declaring this 2x is whack... please help; errors if you don't do it
@@ -63,7 +62,7 @@ foo=bar
             }
 
             It "no ini no ENV" {
-                $verbosepreference = "Continue"
+                #$verbosepreference = "Continue"
                 $file = _resolve_config_file;
                 $file | should -be $config_file
 
@@ -73,8 +72,8 @@ foo=bar
 
             #we require an ini.. and ENV can override ini values but we can't have ENV vars w/o corresponding ini
             It "no ini and ENV"  {
-                $VerbosePreference = "Continue"
-                $key = _config_url_key
+                #$VerbosePreference = "Continue"
+                $key = _config_jira_url_key
                 $fake_url = "https://awesomeATL.jira.com"
                 $env_var_name =  '$env:' +$key
                 $ex_string =  $env_var_name + ' = "' + $fake_url +'"'
@@ -110,6 +109,7 @@ foo=bar
             It "jira yaml with bad-wrong jira-fields" {
                 $config_hash = @{
                     "foo" = "foo" ;
+                    "project" = "MONK";
                     "JiraFields" = @{
                         "field1" = "foo" ;
                         "field2" = "bar";
@@ -123,6 +123,7 @@ foo=bar
             It "jira yaml with all good fields" {
                 $config_hash = @{
                     "foo" = "foo" ;
+                    "project" = "MONK";
                     "JiraFields" = @{
                         "summary" = "foo" ;
                         "description" = "bar";
@@ -150,6 +151,7 @@ foo=bar
 "@
                 $config_hash = @{
                     "foo" = "foo" ;
+                    "project" = "MONK";
                     "JiraFields" = @{
                         "summary" = "foo" ;
                         "description" = "bar";
@@ -162,11 +164,86 @@ foo=bar
                 [array]$array_of_hash = Get-Jyaml -YamlString $my_text #note explicit cast to array so struct w 1 element doesn't flatten out
                 $array_of_hash | Should -not -benullorempty
                 {_validate_jyaml -YamlArray $array_of_hash -ConfigHash $config_hash} | should -Throw -ExceptionType ([System.IO.InvalidDataException])
-                #(_validate_jyaml -YamlArray $array_of_hash -ConfigHash $config_hash) | should -Be $true
+            }
+
+            It "project resolution from config and yaml" { #this is redundant w/ next test
+                $project_name = "MYPROJ"
+                $my_epic= @"
+- epic name: Epic foo
+  summary: This is an Epic
+  description: My Epic description
+"@
+
+                $config_hash = @{
+                    "foo" = "foo" ;
+                    "Project" = $project_name
+                    "JiraFields" = @{
+                        "summary" = "foo" ;
+                        "description" = "bar";
+                        "stories" = "eyeballs";
+                        "epic name" = "eyeballs";
+                        "subtasks" = "foo";
+                    };
+                };
+
+                [array]$array_of_hash = Get-Jyaml -YamlString $my_epic #note explicit cast to array so struct w 1 element doesn't flatten out
+                $array_of_hash | Should -not -benullorempty
+                $array_of_hash.count| Should -be 1
+
+                $project = _resolve_jira_project -IssueStruct $array_of_hash[0] -ConfigHash $config_hash 
+                $project | Should -not -BeNullOrEmpty
+                $project | Should -Be $project_name
+
+                $config_hash.Remove("Project")
+                $project_name2 = "MYPROJ2"
+                $my_epic= @"
+- epic name: Epic foo
+  summary: This is an Epic
+  description: My Epic description
+  project: $project_name2
+"@
+                [array]$array_of_hash = Get-Jyaml -YamlString $my_epic #note explicit cast to array so struct w 1 element doesn't flatten out
+                $array_of_hash | Should -not -benullorempty
+                $array_of_hash.count| Should -be 1
+
+                $project = _resolve_jira_project -IssueStruct $array_of_hash[0] -ConfigHash $config_hash
+                $project | Should -not -BeNullOrEmpty
+                $project | Should -Be $project_name2
+            }
+
+            It "project supplied or not" {
+                #$VerbosePreference = "Continue"
+                $my_text = @"
+- epic name: Epic foo
+  summary: This is an Epic
+  description: My Epic description
+"@
+                $config_hash = @{
+                    "foo" = "foo" ;
+                    "JiraFields" = @{
+                        "summary" = "foo" ;
+                        "project" = "foo" ;
+                        "description" = "bar";
+                        "epic name" = "eyeballs";
+                    };
+                };
+#no project field at all
+                [array]$array_of_hash = Get-Jyaml -YamlString $my_text #note explicit cast to array so struct w 1 element doesn't flatten out
+                $array_of_hash | Should -not -benullorempty
+                {_validate_jyaml -YamlArray $array_of_hash -ConfigHash $config_hash} | should -Throw -ExceptionType ([System.MissingFieldException])
+
+#global/config project field set
+                $config_hash["project"] = "myProject"
+                (_validate_jyaml -YamlArray $array_of_hash -ConfigHash $config_hash) | should -Be $true
+
+#project supplied by issue
+                $config_hash.remove("project")
+                $array_of_hash[0]["project"] = "myProject"
+                (_validate_jyaml -YamlArray $array_of_hash -ConfigHash $config_hash) | should -Be $true
             }
         }
 
-        Context "issue related functions" -tag "THIS" {
+        Context "issue related functions"  {
             It "_issue_is_epic" {
                 $my_epic= @"
 - epic name: Epic foo
@@ -202,14 +279,70 @@ foo=bar
                 (_issue_is_epic -IssueStruct $array_of_hash[0] -ConfigHash $config_hash) | Should -be $false
             }
         }
-            #TODO: allow project to be defined in Config and/or yaml
+
+        Context "issue search" -tag "THIS"{
+            It "already cached"  {
+                $project_name = "FBALLS"
+                $fake_summary = "this is a summary"
+                $fake_issue = @{summary = $fake_summary};
+                $config_hash = @{
+                    "foo" = "foo" ;
+                    "Project" = $project_name; 
+                    "_issues" = @{$project_name = @{$fake_summary = $fake_issue}}; 
+                    "JiraFields" = @{
+                        "summary" = "foo" ;
+                        "description" = "bar";
+                        "stories" = "eyeballs";
+                        "epic name" = "eyeballs";
+                        "subtasks" = "foo";
+                    };
+                };
+
+                $issue = _jira_issue_search -ConfigHash $config_hash -Project $project_name -Summary $fake_summary
+
+                $issue | Should -not -benullorempty
+                ($issue -is [hashtable]) | Should -Be $true
+                $issue.ContainsKey("summary") | Should -Be $true
+                $issue.summary | Should -Be $fake_summary
+            }
+
+            It "fetch issues" {
+
+                $file = $global:TEST_CONFIG_DIR + "example_issues.json"
+                $struct = get-content $file | ConvertFrom-Json
+                $struct | Should -not -benullorempty
+                $struct.count | Should -be 2
+                $fake_summary = $struct[0].summary
+
+                mock JiraPS\Get-JiraIssue {
+                    $struct
+                }
+
+                $project_name = "ABB"
+                $config_hash = @{
+                    "foo" = "foo" ;
+                    "Project" = $project_name; 
+                    "JiraFields" = @{
+                        "summary" = "foo" ;
+                        "description" = "bar";
+                        "stories" = "eyeballs";
+                        "epic name" = "eyeballs";
+                        "subtasks" = "foo";
+                    };
+                };
+
+                $issue = _jira_issue_search -ConfigHash $config_hash -Project $project_name -Summary $fake_summary
+                $issue | Should -not -benullorempty
+                $issue.summary | Should -be $fake_summary
+            }
+
+        }
     }
 }
 
 Describe "basic ini parser tests"  -tag "external" {
     Context "simple ini file" {
         BeforeAll {
-                if($env:vb){ $verbosepreference = $env:vb }
                 $file = $global:TEST_CONFIG_DIR +"foo.ini"
         }
 
@@ -321,7 +454,7 @@ Describe "yaml tests" {
         }
 
         It "multiple epics yaml" {
-            $verbosepreference = "Continue"
+            #$verbosepreference = "Continue"
             $base= split-path $PSScriptroot
             $yaml_file = "$base/examples/ex2.yaml"
             $yaml_file | should -exist
@@ -368,7 +501,7 @@ Describe "Get-JCustomFieldHash Tests" {
     }
 
     It "Get-JCustomFieldHash Success" {
-        $verbosepreference = "Continue"
+        #$verbosepreference = "Continue"
         mock Get-JiraField -MockWith  {
                     @(
                         @{ID=1;
