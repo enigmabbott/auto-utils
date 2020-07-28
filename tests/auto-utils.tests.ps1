@@ -282,7 +282,7 @@ foo=bar
 
         Context "issue search" -tag "THIS"{
             It "already cached"  {
-                $project_name = "FBALLS"
+                $project_name = "FBI"
                 $fake_summary = "this is a summary"
                 $fake_issue = @{summary = $fake_summary};
                 $config_hash = @{
@@ -298,7 +298,7 @@ foo=bar
                     };
                 };
 
-                $issue = _jira_issue_search -ConfigHash $config_hash -Project $project_name -Summary $fake_summary
+                $issue = Get-JIssue -ConfigHash $config_hash -Project $project_name -Summary $fake_summary
 
                 $issue | Should -not -benullorempty
                 ($issue -is [hashtable]) | Should -Be $true
@@ -307,16 +307,13 @@ foo=bar
             }
 
             It "fetch issues" {
-
                 $file = $global:TEST_CONFIG_DIR + "example_issues.json"
                 $struct = get-content $file | ConvertFrom-Json
                 $struct | Should -not -benullorempty
                 $struct.count | Should -be 2
                 $fake_summary = $struct[0].summary
 
-                mock JiraPS\Get-JiraIssue {
-                    $struct
-                }
+                mock JiraPS\Get-JiraIssue { $struct }
 
                 $project_name = "ABB"
                 $config_hash = @{
@@ -331,11 +328,10 @@ foo=bar
                     };
                 };
 
-                $issue = _jira_issue_search -ConfigHash $config_hash -Project $project_name -Summary $fake_summary
+                $issue = Get-JIssue -ConfigHash $config_hash -Project $project_name -Summary $fake_summary
                 $issue | Should -not -benullorempty
                 $issue.summary | Should -be $fake_summary
             }
-
         }
     }
 }
@@ -515,6 +511,17 @@ Describe "Get-JCustomFieldHash Tests" {
         write-verbose (ConvertTo-Json $hash)
 
     }
+}
+
+Describe "Sync-JYaml Tests" -tag "THIS" {
+    #this actually fetches data from a JIRA SERVER
+    #we need to mock that out
+    It "foo "  {
+        $f  =  $PSScriptroot + "\..\in.yaml";
+        Sync-JYaml -YamlFile $f
+
+    }
+
 }
 
 #test issue create epic
