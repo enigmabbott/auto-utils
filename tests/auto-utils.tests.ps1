@@ -281,31 +281,7 @@ foo=bar
         }
 
         Context "issue search" -tag "THIS"{
-            It "already cached"  {
-                $project_name = "FBI"
-                $fake_summary = "this is a summary"
-                $fake_issue = @{summary = $fake_summary};
-                $config_hash = @{
-                    "foo" = "foo" ;
-                    "Project" = $project_name; 
-                    "_issues" = @{$project_name = @{$fake_summary = $fake_issue}}; 
-                    "JiraFields" = @{
-                        "summary" = "foo" ;
-                        "description" = "bar";
-                        "stories" = "eyeballs";
-                        "epic name" = "eyeballs";
-                        "subtasks" = "foo";
-                    };
-                };
-
-                $issue = Get-JIssue -ConfigHash $config_hash -Project $project_name -Summary $fake_summary
-
-                $issue | Should -not -benullorempty
-                ($issue -is [hashtable]) | Should -Be $true
-                $issue.ContainsKey("summary") | Should -Be $true
-                $issue.summary | Should -Be $fake_summary
-            }
-
+        
             It "fetch issues" {
                 $file = $global:TEST_CONFIG_DIR + "example_issues.json"
                 $struct = get-content $file | ConvertFrom-Json
@@ -467,9 +443,42 @@ Describe "yaml tests" {
     }
 }
 
-Describe "Sync-JYaml" -tag "external" {
+Describe "Sync-JYaml" -tag "THIS" { #"external"
     It "bad params" {
         {Sync-JYaml} | should -Throw -ExceptionType ([System.Management.Automation.MethodInvocationException])
+    }
+
+    #this actually fetches data from a JIRA SERVER
+    #we need to mock that out
+    It "epic only"  {
+        $verbosepreference = "Continue"
+        $config_hash = @{
+            "foo" = "foo" ;
+            "project" = "MONK";
+            "reporter" = "me";
+            "JiraFields" = @{
+                        "summary" = @{name = "summary"; ID = "summary"} ;
+                        "description" = @{name = "description"; ID = "description"} ;
+                        "stories" = @{name = "stories"; ID = "stories"} ;
+                        "epic name" = @{name = "epic name"; ID = "epic name"} ;
+                    };
+        };
+
+        $yaml_file = $global:TEST_CONFIG_DIR + "epic.yaml"
+        $json_file = $global:TEST_CONFIG_DIR + "example_epic_created.json"
+
+        $obj= get-content $json_file | ConvertFrom-Json
+        $obj | Should -not -benullorempty
+        $obj.psobject | Should -not -benullorempty
+        ($obj.psobject.properties | measure | select  -ExpandProperty count) | Should -be 99
+
+        mock JiraPS\New-JiraIssue { $obj}
+        mock JiraPS\Get-JiraIssue { $null }
+
+        [array]$issue_array = Sync-JYaml -YamlFile $yaml_file -ConfigHash $config_hash
+        $issue_array | Should -not -benullorempty
+        #write-verbose ($issue_array | ConvertTo-json)
+        $issue_array.count | Should -be 1 
     }
 }
 
@@ -513,16 +522,7 @@ Describe "Get-JCustomFieldHash Tests" {
     }
 }
 
-Describe "Sync-JYaml Tests" -tag "THIS" {
-    #this actually fetches data from a JIRA SERVER
-    #we need to mock that out
-    It "foo "  {
-        $f  =  $PSScriptroot + "\..\in.yaml";
-        Sync-JYaml -YamlFile $f
 
-    }
-
-}
 
 #test issue create epic
 #test issue create epic and child

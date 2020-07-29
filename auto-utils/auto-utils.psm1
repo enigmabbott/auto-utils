@@ -13,11 +13,22 @@
 #this requires on config or ENV... straightup/basic function
 
 function _config_jira_project_key { "project"}
+function _config_jira_issue_type_key {"issuetype"}
 function _config_jira_reporter{ "reporter"}
 function _config_jira_url_key { "jiraurl"}
 function _config_jira_user_key { "jirauser"}
 function _config_jira_fields_key{ "jirafields" }  #this is resolved and shouldn't be provided
 function _config_ini_name { ".poshjiraclientrc"}
+function _core_issue_fields {
+    return @{
+    Project = "TEST";
+    IssueType = "Bug";
+    Priority = 1;
+    Summary = 'foo'
+    Description = 'This';
+    Reporter = 'me';
+    }
+}
 
 <#
 .SYNOPSIS
@@ -79,6 +90,9 @@ function Get-JYaml {
 <#
 .SYNOPSIS
 Dumps resolved Configuration hashtable
+
+
+.DESCRIPTION
 Config is resolved from a Base ini file; 
 Then evaluation of Environment variables with SAME NAME can override INI.
 Last CLI args can override INI and ENV vars.
@@ -88,7 +102,7 @@ Any value in INI can be an ENV or CLI argument;
 
 See "Update-JYamlConfig" to create default ini
 
-Related
+.LINK
     JiraPS\Get-JiraConfigServer;
     JiraPS\Get-JiraSession
 
@@ -100,6 +114,8 @@ function Show-JYamlConfig {
         [hashtable]$ConfigHash,
         [Parameter(HelpMessage="Show JIRA fields")]
         [switch]$ShowFields,
+        [Parameter(HelpMessage="Add Credentials and init session")]
+        [switch]$InitSession,
         [Parameter(ValueFromRemainingArguments, HelpMessage="Any param that is your config can be overwritten as -CLI Argument")]
         $BonusParams
 
@@ -108,15 +124,22 @@ function Show-JYamlConfig {
     #$verbosepreference = "Continue"
 
     if(-not $ConfigHash){
+         
+        $sessionParams = @{"noInitSession" = $true}
+        if($initSession -eq $true){
+            $sessionParams= @{}
+        }
+
 #setup session and load config
 #this defines overall state of the session and takes the place of invocating an instance object which has similar properties
 #hoping this is the powershell way...
 #$ConfigHash = _jyaml_init_config -PassThruParams $BonusParams
-        $ConfigHash = _jyaml_init_config -noInitSession @BonusParams
+        #$ConfigHash = _jyaml_init_config @sessionParams @BonusParams
 
+        $ConfigHash = _jyaml_init_config @SessionParams @BonusParams
 #this puts a JIRA's customfield IDs into the confighash; also validates crendentials and init handshake
         if($ShowFields){
-            $fields_hash = Get-JCustomFieldHash  -ConfigHash $ConfigHash
+            $fields_hash = Get-JCustomFieldHash -ConfigHash $ConfigHash
             if( -not $fields_hash ){
                 throw "Could not fetch jira custom fields.. FATAL";
             }
@@ -187,19 +210,22 @@ function Sync-JYaml {
     $throw_away = _validate_jyaml -YamlArray $YamlArray -ConfigHash $ConfigHash #should be fatal if missing required or has unknown params
 
 #might want to create a generic PreJiraIssue class and call methods rather than work on raw data-structures
+    $issues = @();
     foreach ($proto_issue in $YamlArray) {
         #is it an epic
         $is_epic =  _issue_is_epic -IssueStruct $proto_issue -ConfigHash $ConfigHash
-        if($is_epic){
-            _idempotent_epic_updates -IssueStruct $proto_issue -ConfigHash $ConfigHash
+        if($is_epic -eq $true ){
+            $epic_and_children = _idempotent_epic_updates -IssueStruct $proto_issue -ConfigHash $ConfigHash
+            $issues += $epic_and_children
 
         }else {
-            _idempotent_issue_updates -IssueStruct $proto_issue -ConfigHash $ConfigHash
+            $issue = _idempotent_issue_updates -IssueStruct $proto_issue -ConfigHash $ConfigHash
+            $issues += $issue
 
         }
     }
 
-    return $true
+    return $issues
 }
 
 function _issue_is_epic {
@@ -219,18 +245,6 @@ function _issue_is_epic {
     return $false
 }
 
-
-function _core_issue_fields {
-    return @{
-    Project = "TEST";
-    IssueType = "Bug";
-    Priority = 1;
-    Summary = 'foo'
-    Description = 'This';
-    Reporter = 'me';
-    }
-}
-
 function _idempotent_epic_updates {
     param(
         [Parameter(Mandatory,HelpMessage="a hashtable create from parsed yaml")] #see Get-JYaml output
@@ -240,58 +254,87 @@ function _idempotent_epic_updates {
     )
 
     $project = _resolve_jira_project -IssueStruct $IssueStruct -ConfigHash $ConfigHash
-    $reporter = _resolve_jira_reporter -IssueStruct $IssueStruct -ConfigHash $ConfigHash
+    $reporter= _resolve_jira_reporter -IssueStruct $IssueStruct -ConfigHash $ConfigHash
     $issue = Get-JIssue -ConfigHash $configHash -Project $project -Summary $IssueStruct.summary
 
-    $fields = $ConfigHash[(_config_jira_fields_key)]
-
+    $all_issues = @();
 
     if($issue){
         Write-PSFMessage -Message ("Issue found: Project $project Summary: " + $issue.summary) -Verbose
         #not quite idempotent yet
+        $all_issues += $issue;
 
     }else {
-        #create issue here
-        #$bonus_fields = @{ "Reporter" = $reporter; }
-        $bonus_fields = @{}
-        $new_issue_params = @{"IssueType"="Epic";
-                              "Project" = $project;
-                              "Reporter" = $reporter;
-                            }
-        $core = _core_issue_fields ;
+        $issue = _create_jira_issue -IssueType "Epic" -Project $project -Reporter $reporter -ConfigHash $ConfigHash -IssueStruct $IssueStruct
+        $all_issues += $issue;
 
-        foreach ($key in $IssueStruct.keys) {
-            $field_hash = $fields[$key]#validation of fields already occurred
-            if(-not $field_hash){
-                Write-PSFMessage -Message ("Valid fields: " + (convertTo-json $fields.keys) ) -Verbose
-                throw "Bad key: $key; not in jira fields"
-            }
-
-            if( $core.containsKey( ($field_hash.ID) ) ){
-                $new_issue_params[$field_hash.ID] = $IssueStruct[$key]
-                Write-PSFMessage -Message ("core: " + ($field_hash.ID))
-            } else {
-                $bonus_fields[($field_hash.ID)] = $IssueStruct[$key]
-                Write-PSFMessage -Message ("not core: " + ($field_hash.ID))
-            }
-        }
-
-        if($bonus_fields.Count -gt 0){
-            $new_issue_params["Fields"] = $bonus_fields
-        }
-
-        Write-PSFMessage -Message ( (convertTo-Json $new_issue_params)) 
-        $issue = New-JiraIssue @new_issue_params 
-    }
-
-    if($IssueStruct.containsKey("stories")){
-        foreach ($proto_issue in $IssueStruct['stories']) {
-            _idempotent_issue_updates -IssueStruct $proto_issue -ConfigHash $ConfigHashi -EpicLink $issue.key
+        if($IssueStruct.containsKey("stories")){
+            foreach ($proto_issue in $IssueStruct['stories']) {
+                 $more_issues = _idempotent_issue_updates -IssueStruct $proto_issue -ConfigHash $ConfigHash -EpicLink $issue.key
+                 $all_issues += $more_issue;
+             }
         }
     }
     
+    return $all_issues
+}
+
+function _create_jira_issue {
+    param(
+        [Parameter(Mandatory,HelpMessage="JIRA issuetype ")]
+        [string] $IssueType,
+        [Parameter(Mandatory,HelpMessage="JIRA Project")]
+        [string] $Project,
+        [Parameter(Mandatory,HelpMessage="JIRA Reporter")]
+        [string] $Reporter,
+        [Parameter(Mandatory,HelpMessage="a hashtable create from parsed yaml")] #see Get-JYaml output
+        [hashtable] $IssueStruct,
+        [Parameter(Mandatory,HelpMessage="Config has already been resolved")]
+        [hashtable]$ConfigHash,
+        [Parameter(HelpMessage="parent of a subtask")]
+        [hashtable]$SubTaskParent
+    )
+
+    if($SubTaskParent -ne $null){
+        $IssueType = "Subtask";
+    }
+
+    $fields = $ConfigHash[(_config_jira_fields_key)]
+
+    $bonus_fields = @{}
+    $new_issue_params = @{"IssueType"= $IssueType;
+                          "Project"  = $Project;
+                          "Reporter" = $Reporter;
+                        }
+    $core = _core_issue_fields ;
+
+    foreach ($key in $IssueStruct.keys) {
+        $field_hash = $fields[$key]#validation of fields already occurred
+        if(-not $field_hash){
+            Write-PSFMessage -Message ("Valid fields: " + (convertTo-json $fields.keys) ) -Verbose
+            throw "Bad key: $key; not in jira fields"
+        }
+
+        if( $core.containsKey( ($field_hash.ID) ) ){
+            $new_issue_params[$field_hash.ID] = $IssueStruct[$key]
+            Write-PSFMessage -Message ("core: " + ($field_hash.ID))
+        } else {
+            $bonus_fields[($field_hash.ID)] = $IssueStruct[$key]
+            Write-PSFMessage -Message ("not core: " + ($field_hash.ID))
+        }
+    }
+
+    if($bonus_fields.Count -gt 0){
+        $new_issue_params["Fields"] = $bonus_fields
+    }
+
+    Write-PSFMessage -Message ( (convertTo-Json $new_issue_params)) 
+    $issue = New-JiraIssue @new_issue_params 
+
     return $issue;
 }
+
+
 <#
 .SYNOPSIS
 Fetch all not-done issues in a project and cache them.
@@ -303,7 +346,7 @@ function Get-JIssue {
     param(
         [Parameter(Mandatory,HelpMessage="jira issue summary")] 
         [string] $Summary,
-        [Parameter(Mandatory,HelpMessage="jira project")] 
+        [Parameter(HelpMessage="jira project")] 
         [string] $Project,
         [Parameter(HelpMessage="Config has already been resolved")]
         [hashtable]$ConfigHash,
@@ -319,45 +362,49 @@ function Get-JIssue {
         $ConfigHash = _jyaml_init_config @BonusParams
     }
 
-    if($ConfigHash.ContainsKey("_issues")){
-        if($ConfigHash._issues.ContainsKey($Project)){
-            if($Summary -eq '*'){
-                return $ConfigHash._issues.$Project
-            }elseif($ConfigHash._issues.$Project.ContainsKey($Summary)){
-                return $ConfigHash._issues.$Project.$Summary
-            }else {
-                Write-PSFMessage -message "No issue w/ summary: $Summary" -verbose
-                return $null;
-            }
+    if(-not $project){
+        $project = _resolve_jira_project -ConfigHash $ConfigHash
+        if( -not $project ) {
+            throw [System.MissingFieldException]("missing required field [either global/config or issue level]: " + (_config_jira_project_key))
+
         }
-    }else {
-        $ConfigHash._issues =  @{}
     }
 
-    #maybe check/validate $Project doesn't have whitespace
+    $ex_string =  "JiraPS\Get-JiraIssue -Query 'Project = $Project and StatusCategory != Done"
 
-    Write-PSFMessage -message "Loading all not Done issues for project $Project" -verbose
+    if($Summary -ne '*'){
+        $ex_string +=  " and summary ~ " + '"' + $summary + '"' 
+    }
 
-    $ex_string =  "JiraPS\Get-JiraIssue -Query 'Project  = $Project and StatusCategory != Done'"
-    Write-PSFMessage -message $ex_string 
+    $ex_string +=  "'" 
+    Write-PSFMessage -message $ex_string  -verbose
     $issues = invoke-expression $ex_string
 
-    #Write-PSFMessage -Level Warning -Message (convertTo-Json $issues) -Verbose
-
     $project_hash = @{}
-    if(-not $issues ){
+    if(-not $issues){
         return $null;
-    }else {
-        Write-PSFMessage -message ("Issue count: " + ($issues.count)) -verbose
-        foreach($issue in $issues){
-            $s = $issue.summary
-            $project_hash[$s] = $issue
+    }
+
+    Write-PSFMessage -message ("Pre filter issue count: " + ($issues.count)) -verbose
+    if($Summary -eq '*'){
+        return $issues
+    }
+
+    $hit = ""
+    foreach($issue in $issues){
+        if( $issue.summary -eq $Summary ){
+            $hit = $issue
+            break
+
         }
     }
 
-    $ConfigHash._issues[$Project] = $project_hash
+    if(-not $hit){
+        Write-PSFMessage -message "No issue w/ summary: $Summary" -verbose
+        return $null;
+    }
 
-    return (Get-JIssue -Summary $Summary -ConfigHash $ConfigHash -Project $Project)
+    return $hit
 }
 
 function _idempotent_issue_updates {
@@ -367,19 +414,12 @@ function _idempotent_issue_updates {
         [Parameter(Mandatory,HelpMessage="Config has already been resolved")]
         [hashtable]$ConfigHash,
         [Parameter(HelpMessage="All issues must have an epic for now...")]
-        [hashtable]$EpicLink,
-        [Parameter(HelpMessage="All issues must have an epic for now...")]
-        [hashtable]$SubTaskParent
+        [hashtable]$EpicLink
     )
 
-    if(-not $EpicLink -and -not $SubTaskParent){
-        $message = "Developer ERROR (EpicLink or SubTaskParent) required"
-        Write-PSFMessage -Level Warning -message $message -verbose
-        throw $message
-
-    }
-
     $project = _resolve_jira_project -IssueStruct $IssueStruct -ConfigHash $ConfigHash
+    $reporter= _resolve_jira_reporter -IssueStruct $IssueStruct -ConfigHash $ConfigHash
+    $issue_type = _resolve_jira_issue_type -IssueStruct $IssueStruct -ConfigHash $ConfigHash
     $issue = Get-JIssue -ConfigHash $configHash -Project $project -Summary $IssueStruct.summary
 
     if($issue){
@@ -390,27 +430,28 @@ function _idempotent_issue_updates {
 
     }else {
         #create issue here
-
-        #copy/paste from above... need to refactor to function
-        $new_issue_params = @{}
-        foreach ($key in issue.keys) {
-            $id_based_key = $fields[$key]["Id"] #validation of fields already occurred
-            if(-not $id_based_key){
-                throw "Bad key: $key ; not in jira fields"
+        $issue_params = @{
+                IssueType = $issue_type;
+                Project   = $project;
+                Reporter  = $reporter;
+                ConfigHash = $ConfigHash;
+                IssueStruct = $IssueStruct;
             }
 
-            $new_issue_params[$id_based_key] = $IssueStruct[$key]
+        if( $EpicLink -ne $null ) {
+            $issue_params["EpicLink"] = $EpicLink
+        
         }
 
-        Write-PSFMessage -Level Warning -Message (convertTo-Json $new_issue_params) -Verbose
-        $issue = new-JiraIssue @new_issue_params
-        
-        #fail if bad
-    }
+        $issue = _create_jira_issue @issue_params
+        $all_issues += $issue;
 
-    if($IssueStruct.containsKey("subtasks")){
-        foreach ($proto_issue in $IssueStruct['subtasks']) {
-            _idempotent_issue_updates -IssueStruct $proto_issue -ConfigHash $ConfigHashi -SubTaskParent $issue.key
+        if($IssueStruct.containsKey("subtasks")){
+            foreach ($proto_issue in $IssueStruct['subtasks']) {
+                $issue_params["IssueStruct"] = $proto_issue
+                $issue_params["SubTaskParent"] = $issue.key
+                $issue = _create_jira_issue @issue_params
+            }
         }
     }
     
@@ -647,7 +688,7 @@ function _credential_wrapper {
 
 function _generic_field_resolver {
     param(
-        [Parameter(Mandatory,HelpMessage="a hashtable create from parsed yaml")] #see Get-JYaml output
+        [Parameter(HelpMessage="a hashtable create from parsed yaml")] #see Get-JYaml output
         [hashtable] $IssueStruct,
         [Parameter(Mandatory,HelpMessage="Config has already been resolved")]
         [hashtable]$ConfigHash,
@@ -661,15 +702,16 @@ function _generic_field_resolver {
 
     } 
 
-    if(  $IssueStruct.containsKey($field) ){
+    if( ($IssueStruct.count -gt 0) -and ($IssueStruct.containsKey($field)) ){
         $thing= $IssueStruct[ $field ]
     }
+    Write-PSFMessage -Message "message here" -Verbose
 
     return $thing
 }
 function _resolve_jira_project {
     param(
-        [Parameter(Mandatory,HelpMessage="a hashtable create from parsed yaml")] #see Get-JYaml output
+        [Parameter(HelpMessage="a hashtable create from parsed yaml")] #see Get-JYaml output
         [hashtable] $IssueStruct,
         [Parameter(Mandatory,HelpMessage="Config has already been resolved")]
         [hashtable]$ConfigHash
@@ -678,9 +720,25 @@ function _resolve_jira_project {
     return _generic_field_resolver -IssueStruct $IssueStruct -ConfigHash $ConfigHash -field (_config_jira_project_key) 
 }
 
+function _resolve_jira_issue_type {
+    param(
+        [Parameter(HelpMessage="a hashtable create from parsed yaml")] #see Get-JYaml output
+        [hashtable] $IssueStruct,
+        [Parameter(Mandatory,HelpMessage="Config has already been resolved")]
+        [hashtable]$ConfigHash
+    )
+
+    $type = _generic_field_resolver -IssueStruct $IssueStruct -ConfigHash $ConfigHash -field (_config_jira_issue_type_key) 
+    if($type -ne $null){
+        return $type;
+    }
+
+    return "Story"
+}
+
 function _resolve_jira_reporter {
     param(
-        [Parameter(Mandatory,HelpMessage="a hashtable create from parsed yaml")] #see Get-JYaml output
+        [Parameter(HelpMessage="a hashtable create from parsed yaml")] #see Get-JYaml output
         [hashtable] $IssueStruct,
         [Parameter(Mandatory,HelpMessage="Config has already been resolved")]
         [hashtable]$ConfigHash
