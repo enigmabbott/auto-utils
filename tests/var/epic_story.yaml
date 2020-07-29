@@ -1,0 +1,7 @@
+epic name: My Epic Name
+summary: This is an Epic
+description: This is an Epic description
+stories:
+  - summary: s1 summary
+    description: story s1 has is a very long description
+    timetracking: 1h

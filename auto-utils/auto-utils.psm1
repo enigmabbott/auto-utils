@@ -21,12 +21,14 @@ function _config_jira_fields_key{ "jirafields" }  #this is resolved and shouldn'
 function _config_ini_name { ".poshjiraclientrc"}
 function _core_issue_fields {
     return @{
-    Project = "TEST";
-    IssueType = "Bug";
-    Priority = 1;
-    Summary = 'foo'
-    Description = 'This';
-    Reporter = 'me';
+        Project = "TEST";
+        IssueType = "Bug";
+        Priority = 1;
+        Summary = 'foo'
+        Description = 'This';
+        Reporter = 'me';
+        Stories = 'foo'
+        Subtasks = 'bar'
     }
 }
 
@@ -260,19 +262,18 @@ function _idempotent_epic_updates {
     $all_issues = @();
 
     if($issue){
-        Write-PSFMessage -Message ("Issue found: Project $project Summary: " + $issue.summary) -Verbose
+        Write-PSFMessage -Message ("Issue found: " + $issue.key + " "  + $issue.summary) -Verbose
         #not quite idempotent yet
         $all_issues += $issue;
-
     }else {
         $issue = _create_jira_issue -IssueType "Epic" -Project $project -Reporter $reporter -ConfigHash $ConfigHash -IssueStruct $IssueStruct
         $all_issues += $issue;
+    }
 
-        if($IssueStruct.containsKey("stories")){
-            foreach ($proto_issue in $IssueStruct['stories']) {
-                 $more_issues = _idempotent_issue_updates -IssueStruct $proto_issue -ConfigHash $ConfigHash -EpicLink $issue.key
-                 $all_issues += $more_issue;
-             }
+    if($IssueStruct.containsKey("stories")){
+        foreach ($proto_issue in $IssueStruct['stories']){
+             $more_issues = _idempotent_issue_updates -IssueStruct $proto_issue -ConfigHash $ConfigHash -EpicLink $issue.key
+             $all_issues += $more_issues;
         }
     }
     
@@ -292,12 +293,10 @@ function _create_jira_issue {
         [Parameter(Mandatory,HelpMessage="Config has already been resolved")]
         [hashtable]$ConfigHash,
         [Parameter(HelpMessage="parent of a subtask")]
-        [hashtable]$SubTaskParent
+        [String]$SubTaskParent,
+        [Parameter(HelpMessage="the epic key the issue should belong to")]
+        [string]$EpicLink
     )
-
-    if($SubTaskParent -ne $null){
-        $IssueType = "Subtask";
-    }
 
     $fields = $ConfigHash[(_config_jira_fields_key)]
 
@@ -306,9 +305,17 @@ function _create_jira_issue {
                           "Project"  = $Project;
                           "Reporter" = $Reporter;
                         }
+
     $core = _core_issue_fields ;
 
+#getting lazy probably should be elsewhere
+    $fields_to_skip = @{subtasks = 1; stories = 1};
+
     foreach ($key in $IssueStruct.keys) {
+        if($fields_to_skip.containsKey($key)){
+            continue;
+        }
+
         $field_hash = $fields[$key]#validation of fields already occurred
         if(-not $field_hash){
             Write-PSFMessage -Message ("Valid fields: " + (convertTo-json $fields.keys) ) -Verbose
@@ -324,13 +331,27 @@ function _create_jira_issue {
         }
     }
 
+    if( $SubTaskParent -ne $null ) {
+        $new_issue_params["Parent"] = $SubTaskParent
+    }
+
+    if($EpicLink -ne $null -and $EpicLink -ne ""){
+        $bonus_fields['Epic Link'] = $EpicLink
+    }
+
     if($bonus_fields.Count -gt 0){
         $new_issue_params["Fields"] = $bonus_fields
     }
 
-    Write-PSFMessage -Message ( (convertTo-Json $new_issue_params)) 
+    Write-PSFMessage -Message ( (convertTo-Json $new_issue_params)) -Verbose
     $issue = New-JiraIssue @new_issue_params 
 
+    if(-not $issue){
+        Write-PSFMessage -Level Warning -Message "Failed to create JIRA issue; see: Get-JiraIssueCreateMetadata" -Verbose
+        throw "failed to create issue"
+    }
+
+    Write-PSFMessage -Message ("Created: " + $issue.key) -Verbose
     return $issue;
 }
 
@@ -385,7 +406,7 @@ function Get-JIssue {
         return $null;
     }
 
-    Write-PSFMessage -message ("Pre filter issue count: " + ($issues.count)) -verbose
+    Write-PSFMessage -message ("Pre filter issue count (jql uses loose regex): " + ($issues.count))
     if($Summary -eq '*'){
         return $issues
     }
@@ -414,13 +435,31 @@ function _idempotent_issue_updates {
         [Parameter(Mandatory,HelpMessage="Config has already been resolved")]
         [hashtable]$ConfigHash,
         [Parameter(HelpMessage="All issues must have an epic for now...")]
-        [hashtable]$EpicLink
+        [string]$EpicLink,
+        [Parameter(HelpMessage="JIRA Project")]
+        [string]$Project,
+        [Parameter(HelpMessage="JIRA Reporter")]
+        [string]$Reporter,
+        [Parameter(HelpMessage="JIRA IssueType")]
+        [string]$IssueType,
+        [Parameter(HelpMessage="parent of a subtask")]
+        [String]$SubTaskParent
     )
 
-    $project = _resolve_jira_project -IssueStruct $IssueStruct -ConfigHash $ConfigHash
-    $reporter= _resolve_jira_reporter -IssueStruct $IssueStruct -ConfigHash $ConfigHash
-    $issue_type = _resolve_jira_issue_type -IssueStruct $IssueStruct -ConfigHash $ConfigHash
+    if(-not $Project){
+        $Project = _resolve_jira_project -IssueStruct $IssueStruct -ConfigHash $ConfigHash
+    }
+
+    if(-not $Reporter ){
+        $Reporter= _resolve_jira_reporter -IssueStruct $IssueStruct -ConfigHash $ConfigHash
+    }
+
+    if(-not $IssueType){
+        $IssueType = _resolve_jira_issue_type -IssueStruct $IssueStruct -ConfigHash $ConfigHash
+    }
     $issue = Get-JIssue -ConfigHash $configHash -Project $project -Summary $IssueStruct.summary
+
+    $all_issues = @();
 
     if($issue){
         Write-PSFMessage -Message ("Issue found: Project $project Summary: " + $issue.summary) -Verbose
@@ -431,31 +470,44 @@ function _idempotent_issue_updates {
     }else {
         #create issue here
         $issue_params = @{
-                IssueType = $issue_type;
-                Project   = $project;
-                Reporter  = $reporter;
+                IssueType = $IssueType;
+                Project   = $Project;
+                Reporter  = $Reporter;
                 ConfigHash = $ConfigHash;
                 IssueStruct = $IssueStruct;
             }
 
-        if( $EpicLink -ne $null ) {
-            $issue_params["EpicLink"] = $EpicLink
-        
+        if( $SubTaskParent -ne $null ) {
+            $issue_params["SubTaskParent"] = $SubTaskParent
         }
 
+        if( $EpicLink -ne $null ) {
+            $issue_params["EpicLink"] = $EpicLink
+        }
+    
         $issue = _create_jira_issue @issue_params
-        $all_issues += $issue;
+    }
 
-        if($IssueStruct.containsKey("subtasks")){
-            foreach ($proto_issue in $IssueStruct['subtasks']) {
-                $issue_params["IssueStruct"] = $proto_issue
-                $issue_params["SubTaskParent"] = $issue.key
-                $issue = _create_jira_issue @issue_params
+    $all_issues += $issue;
+
+    if($IssueStruct.containsKey("subtasks")){
+        foreach ($proto_issue in $IssueStruct['subtasks']){
+
+            $issue_params = @{
+                IssueType = "Sub-Task";
+                Project   = $Project;
+                Reporter  = $Reporter;
+                ConfigHash = $ConfigHash;
+                IssueStruct = $proto_issue;
+                SubTaskParent = $issue.key;
             }
+
+            $more_issues = _idempotent_issue_updates @issue_params
+            $all_issues += $more_issues;
         }
     }
     
-    return $issue;
+    return $all_issues;
 }
 
         #$epic_params = @{IssueType = "Epic"}
@@ -705,7 +757,6 @@ function _generic_field_resolver {
     if( ($IssueStruct.count -gt 0) -and ($IssueStruct.containsKey($field)) ){
         $thing= $IssueStruct[ $field ]
     }
-    Write-PSFMessage -Message "message here" -Verbose
 
     return $thing
 }
@@ -766,10 +817,13 @@ function _validate_jyaml {
 
     $errors = $false
 
+    $core = _core_issue_fields ;
     $field_checker = {
         param($lookup_hash, $search)
-        if(-not $lookup_hash[$search]){
-            Write-PSFMessage -Level Warning -message "Invalid yaml; key: $search is not among the supported fields of your jira instance" -verbose;
+        if($core[$search]){
+            #pass
+        }elseif(-not $lookup_hash[$search]){
+            Write-PSFMessage -Level Warning -message "Invalid yaml; key: '$search' is not among the supported fields of your jira instance" -verbose;
             return $false  
         }
 

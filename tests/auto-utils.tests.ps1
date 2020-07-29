@@ -280,7 +280,7 @@ foo=bar
             }
         }
 
-        Context "issue search" -tag "THIS"{
+        Context "issue search" {
         
             It "fetch issues" {
                 $file = $global:TEST_CONFIG_DIR + "example_issues.json"
@@ -443,7 +443,7 @@ Describe "yaml tests" {
     }
 }
 
-Describe "Sync-JYaml" -tag "THIS" { #"external"
+Describe "Sync-JYaml" { #"external"
     It "bad params" {
         {Sync-JYaml} | should -Throw -ExceptionType ([System.Management.Automation.MethodInvocationException])
     }
@@ -451,7 +451,7 @@ Describe "Sync-JYaml" -tag "THIS" { #"external"
     #this actually fetches data from a JIRA SERVER
     #we need to mock that out
     It "epic only"  {
-        $verbosepreference = "Continue"
+        #$verbosepreference = "Continue"
         $config_hash = @{
             "foo" = "foo" ;
             "project" = "MONK";
@@ -480,10 +480,77 @@ Describe "Sync-JYaml" -tag "THIS" { #"external"
         #write-verbose ($issue_array | ConvertTo-json)
         $issue_array.count | Should -be 1 
     }
+
+#todo loop through these w/ a common struct rather than copy/paste
+    It "Epic and Story" {
+        #$verbosepreference = "Continue"
+        $config_hash = @{
+            "foo" = "foo" ;
+            "project" = "MONK";
+            "reporter" = "me";
+            "JiraFields" = @{
+                        "summary" = @{name = "summary"; ID = "summary"} ;
+                        "description" = @{name = "description"; ID = "description"} ;
+                        "stories" = @{name = "stories"; ID = "stories"} ;
+                        "epic name" = @{name = "epic name"; ID = "epic name"} ;
+                        "timetracking" = @{name = "timetracking"; ID = "timetracking"} ;
+                    };
+        };
+
+        $yaml_file = $global:TEST_CONFIG_DIR + "epic_story.yaml"
+        $json_file = $global:TEST_CONFIG_DIR + "example_epic_created.json"
+
+        $obj= get-content $json_file | ConvertFrom-Json
+        $obj | Should -not -benullorempty
+        $obj.psobject | Should -not -benullorempty
+        ($obj.psobject.properties | measure | select  -ExpandProperty count) | Should -be 99
+
+        mock JiraPS\New-JiraIssue { $obj}
+        mock JiraPS\Get-JiraIssue { $null }
+
+        [array]$issue_array = Sync-JYaml -YamlFile $yaml_file -ConfigHash $config_hash
+        $issue_array | Should -not -benullorempty
+        #write-verbose ($issue_array | ConvertTo-json)
+        $issue_array.count | Should -be 2
+    }
+
+    It "Epic and Task and SubTask" -tag "THIS" {
+
+        #$verbosepreference = "Continue"
+        $config_hash = @{
+            "foo" = "foo" ;
+            "project" = "MONK";
+            "reporter" = "me";
+            "JiraFields" = @{
+                        "summary" = @{name = "summary"; ID = "summary"} ;
+                        "description" = @{name = "description"; ID = "description"} ;
+                        "stories" = @{name = "stories"; ID = "stories"} ;
+                        "epic name" = @{name = "epic name"; ID = "epic name"} ;
+                        "timetracking" = @{name = "timetracking"; ID = "timetracking"} ;
+                        "issuetype" = @{name = "issuetype"; ID = "issuetype"} ;
+                    };
+        };
+
+        $yaml_file = $global:TEST_CONFIG_DIR + "epic_tasks.yaml"
+        $json_file = $global:TEST_CONFIG_DIR + "example_epic_created.json"
+
+        $obj= get-content $json_file | ConvertFrom-Json
+        $obj | Should -not -benullorempty
+        $obj.psobject | Should -not -benullorempty
+        ($obj.psobject.properties | measure | select  -ExpandProperty count) | Should -be 99
+
+        mock JiraPS\New-JiraIssue { $obj }
+        mock JiraPS\Get-JiraIssue { $null }
+
+        [array]$issue_array = Sync-JYaml -YamlFile $yaml_file -ConfigHash $config_hash
+        $issue_array | Should -not -benullorempty
+        #write-verbose ($issue_array | ConvertTo-json)
+        $issue_array.count | Should -be 7
+    }
 }
 
 Describe "Show-JYamlConfig Tests" {
-    It "Show-JYamlConfig"  {
+    It "Show-JYamlConfig" {
         $base= split-path $PSScriptroot
         $config_file = Join-Path $base "\examples\.poshjiraclientrc" 
 

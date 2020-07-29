@@ -1,0 +1,28 @@
+epic name: My Epic Name
+summary: This is an Epic
+description: This is an Epic description
+stories:
+  - summary: s1 summary
+    story points: 5
+    As a: dude
+    I want: awesome things
+    so that: awesome things happen
+    acceptance criteria: "thing one\\nthing two"
+  - summary: s2 summary
+    story points: 3 
+    As a: dude
+    I want: awesome things
+    so that: awesome things happen
+    acceptance criteria: "thing one\\n\\rthing two"
+  - summary: s3 summary
+    story points: 3 
+    As a: dude
+    I want: awesome things
+    so that: awesome things happen
+    acceptance criteria: "thing one\r\nthing two"
+  - summary: s4 summary
+    story points: 3 
+    As a: dude
+    I want: awesome things
+    so that: awesome things happen
+    acceptance criteria: "- thing one\r\n- thing two"

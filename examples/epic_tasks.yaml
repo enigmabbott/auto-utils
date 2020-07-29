@@ -1,0 +1,19 @@
+epic name: My 2nd Epic Name
+summary: This is another Epic
+description: This is an Epic description again
+stories:
+  - summary: my t1 summary
+    description: my description
+    issuetype: task
+  - summary: my t2 summary
+    description: my task2 description
+    issuetype: task
+    subtasks:
+      - summary: t2 st1 summary
+        description: t2 st 1 description
+      - summary: t2 st2 summary
+        description: t2 st 2 description
+      - summary: t2 st3 summary
+        description: t2 st 3 description
+      - summary: t2 st4 summary
+        description: t2 st 4 description
